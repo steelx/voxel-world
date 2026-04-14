@@ -15,10 +15,10 @@ AVoxelChunk::AVoxelChunk()
     MeshComponent->bUseComplexAsSimpleCollision = true;
 }
 
-// Called when the game starts or when spawned
-void AVoxelChunk::BeginPlay()
+void AVoxelChunk::OnConstruction(const FTransform& Transform)
 {
-	Super::BeginPlay();
+    Super::OnConstruction(Transform);
+
     GenerateVoxelData();
     GenerateMesh();
 }
@@ -52,7 +52,7 @@ void AVoxelChunk::GenerateVoxelData()
         {
             for (int32 X = 0; X < ChunkSize; X++)
             {
-                if (Z < ChunkSize / 2)
+                if (Z < ChunkSize)
                 {
                     VoxelData[GetVoxelIndex(X, Y, Z)] = EVoxelType::Dirt;
                 }
@@ -68,6 +68,7 @@ void AVoxelChunk::GenerateMesh()
     TArray<int32> Triangles;
     TArray<FVector> Normals;
     TArray<FVector2D> UVs;
+    TArray<FLinearColor> VertexColors;
     int32 VertexCount = 0;
 
     for (int32 FaceDirection = 0; FaceDirection < 6; FaceDirection++)
@@ -135,10 +136,9 @@ void AVoxelChunk::GenerateMesh()
                         }
 
                         // THE FIX: Match the Start positions perfectly with our clean axis mapping
-                        int32 StartX = bIsXAxis ? Slice : U;
-                        int32 StartY = bIsYAxis ? Slice : (bIsXAxis ? U : V);
-                        int32 StartZ = bIsZAxis ? Slice : V;
-
+                        const int32 StartX = bIsXAxis ? Slice : U;
+                        const int32 StartY = bIsYAxis ? Slice : (bIsXAxis ? U : V);
+                        const int32 StartZ = bIsZAxis ? Slice : V;
                         FVector BlockPos(StartX * 100.0f, StartY * 100.0f, StartZ * 100.0f);
 
                         AddFace(Vertices, Triangles, Normals, UVs, VertexCount, BlockPos, FaceDirection, Width, Height);
@@ -156,7 +156,11 @@ void AVoxelChunk::GenerateMesh()
         }
     }
 
-    MeshComponent->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UVs, TArray<FLinearColor>(), TArray<FProcMeshTangent>(), true);
+    MeshComponent->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UVs, VertexColors, TArray<FProcMeshTangent>(), true);
+    if (VoxelMaterial)
+    {
+        MeshComponent->SetMaterial(0, VoxelMaterial);
+    }
 }
 
 void AVoxelChunk::AddFace(TArray<FVector>& Vertices, TArray<int32>& Triangles, TArray<FVector>& Normals, TArray<FVector2D>& UVs, int32& VertexCount, const FVector& BlockPos, const int32 FaceIndex, const int32 Width, const int32 Height)
@@ -166,7 +170,7 @@ void AVoxelChunk::AddFace(TArray<FVector>& Vertices, TArray<int32>& Triangles, T
 
     switch (FaceIndex)
     {
-        case 0: case 1: // Z-Axis (Top/Bottom)
+        case 0: case 1: default:// Z-Axis (Top/Bottom)
             X_Scale = Width; Y_Scale = Height; break;
         case 2: case 3: // X-Axis (Front/Back)
             Y_Scale = Width; Z_Scale = Height; break;

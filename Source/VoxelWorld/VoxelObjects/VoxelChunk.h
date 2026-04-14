@@ -38,7 +38,10 @@ public:
 	AVoxelChunk();
 
 protected:
-	virtual void BeginPlay() override;
+	virtual void OnConstruction(const FTransform& Transform) override;
+
+	UPROPERTY(EditAnywhere, Category = "Voxel")
+	UMaterialInterface* VoxelMaterial;
 
 	// The View: The component that talks directly to the GPU
 	UPROPERTY(VisibleAnywhere, Category="Voxel")
@@ -79,7 +82,7 @@ private:
 		FIntVector(0, -1, 0)  // Left (Y-)
 	};
 
-	// The 8 absolute corners of a 100cm voxel block
+	// The 8 absolute corners of a UNIT voxel block
 	const FVector VertexBlock[8] = {
 		FVector(0, 0, 0), // 0: Bottom-Back-Left
 		FVector(1, 0, 0), // 1: Bottom-Front-Left
