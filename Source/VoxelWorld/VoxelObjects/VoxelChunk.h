@@ -66,7 +66,7 @@ protected:
 	// The lifecycle functions
 	void GenerateVoxelData();
 	void GenerateMesh();
-	void AddFace(TArray<FVector>& Vertices, TArray<int32>& Triangles, TArray<FVector>& Normals, TArray<FVector2D>& UVs, int32& VertexCount, FVector BlockPos, int32 FaceIndex);
+	void AddFace(TArray<FVector>& Vertices, TArray<int32>& Triangles, TArray<FVector>& Normals, TArray<FVector2D>& UVs, int32& VertexCount, const FVector& BlockPos, const int32 FaceIndex, const int32 Width, const int32 Height);
 
 private:
 	// A static helper array representing the 6 directional neighbors (Top, Bottom, Front, Back, Right, Left)
@@ -80,15 +80,15 @@ private:
 	};
 
 	// The 8 absolute corners of a 100cm voxel block
-	const FVector V[8] = {
-		FVector(0, 0, 0),       // 0: Bottom-Back-Left
-		FVector(100, 0, 0),     // 1: Bottom-Front-Left
-		FVector(0, 100, 0),     // 2: Bottom-Back-Right
-		FVector(100, 100, 0),   // 3: Bottom-Front-Right
-		FVector(0, 0, 100),     // 4: Top-Back-Left
-		FVector(100, 0, 100),   // 5: Top-Front-Left
-		FVector(0, 100, 100),   // 6: Top-Back-Right
-		FVector(100, 100, 100)  // 7: Top-Front-Right
+	const FVector VertexBlock[8] = {
+		FVector(0, 0, 0), // 0: Bottom-Back-Left
+		FVector(1, 0, 0), // 1: Bottom-Front-Left
+		FVector(0, 1, 0), // 2: Bottom-Back-Right
+		FVector(1, 1, 0), // 3: Bottom-Front-Right
+		FVector(0, 0, 1), // 4: Top-Back-Left
+		FVector(1, 0, 1), // 5: Top-Front-Left
+		FVector(0, 1, 1), // 6: Top-Back-Right
+		FVector(1, 1, 1)  // 7: Top-Front-Right
 	};
 
 	// Lookup table: Maps each face to 4 specific vertices in perfect CLOCKWISE order
