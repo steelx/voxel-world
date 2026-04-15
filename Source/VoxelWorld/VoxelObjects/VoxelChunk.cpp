@@ -276,7 +276,12 @@ void AVoxelChunk::GenerateMesh()
         }
     }
 
-    if (VoxelMaterial)
+    // --- MATERIAL ---
+    if (bUseSolidColors && SolidMaterial)
+    {
+        MeshComponent->SetMaterial(0, SolidMaterial);
+    }
+    else if (!bUseSolidColors && VoxelMaterial)
     {
         MeshComponent->SetMaterial(0, VoxelMaterial);
     }
@@ -305,32 +310,37 @@ void AVoxelChunk::AddFace(
     // 2. Convert our scales into actual Unreal Engine distance (100cm blocks)
     const FVector ScaleVec(X_Scale * 100.0f, Y_Scale * 100.0f, Z_Scale * 100.0f);
 
-    // 3. Query the DataTable for the Atlas Coordinate
-    FVector2D AtlasCoord = FVector2D(0, 0); // Default fallback
-    int32 TextureBlockSize = 16; // Default grid size
+    // 3. Query the DataTable for Color/Atlas Data
+    FLinearColor FaceColor = FLinearColor::Gray; // Default fallback
 
     if (const FVoxelBlockData* Data = GetBlockData(BlockType))
     {
-        // Store the tile coordinates and the grid size
-        AtlasCoord = Data->AtlasCoordinate;
-        TextureBlockSize = Data->TextureBlockSize;
-    }
+        if (bUseSolidColors)
+        {
+            // THE LEGO LOOK: Just pass the direct color from the DataTable
+            FaceColor = Data->BlockColor;
+        }
+        else
+        {
+            // TEXTURE ATLAS: Compute the X/Y offset
+            const FVector2D AtlasCoord = Data->AtlasCoordinate;
+            const float TextureBlockSize = Data->TextureBlockSize;
 
-    // Atlas FIX: Normalize the X, Y coordinates to [0.0, 1.0] before assigning to Vertex Color!
-    // This prevents the engine from clamping our values > 1.0
-    const FLinearColor FaceColor(
-        AtlasCoord.X / TextureBlockSize,
-        AtlasCoord.Y / TextureBlockSize,
-        0.0f,
-        1.0f
-    );
+            FaceColor = FLinearColor(
+                AtlasCoord.X / TextureBlockSize,
+                AtlasCoord.Y / TextureBlockSize,
+                0.0f,
+                1.0f
+            );
+        }
+    }
 
     // 4. Append Vertices, Normals, and Colors
     for (int i = 0; i < 4; i++)
     {
         Vertices.Add(BlockPos + (VertexBlock[FaceVertices[FaceIndex][i]] * ScaleVec));
         Normals.Add(FaceNormals[FaceIndex]);
-        VertexColors.Add(FaceColor); // GPU receives the (X,Y) coordinate here!
+        VertexColors.Add(FaceColor); // GPU receives either the raw color or the atlas coordinate
     }
 
     // 5. Scaled UV Mapping based on the lookup table's specific order
@@ -350,6 +360,7 @@ void AVoxelChunk::AddFace(
 
     VertexCount += 4;
 }
+
 
 FVoxelBlockData* AVoxelChunk::GetBlockData(EVoxelType BlockType) const
 {

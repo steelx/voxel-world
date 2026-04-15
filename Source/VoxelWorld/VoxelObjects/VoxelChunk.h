@@ -51,6 +51,12 @@ protected:
 	UDataTable* BlockDataTable;
 
 	UPROPERTY(EditAnywhere, Category = "Voxel")
+	bool bUseSolidColors = true;
+
+	UPROPERTY(EditAnywhere, Category = "Voxel", meta=(EditCondition="bUseSolidColors"))
+	UMaterialInterface* SolidMaterial;
+
+	UPROPERTY(EditAnywhere, Category = "Voxel", meta=(EditCondition="!bUseSolidColors"))
 	UMaterialInterface* VoxelMaterial;
 
 	// The View: The component that talks directly to the GPU
