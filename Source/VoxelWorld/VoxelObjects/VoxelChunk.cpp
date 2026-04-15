@@ -23,9 +23,34 @@ void AVoxelChunk::OnConstruction(const FTransform& Transform)
     GenerateMesh();
 }
 
+void AVoxelChunk::RandomizeSeed()
+{
+    // Generate a random 32-bit integer
+    const int32 NewSeed = FMath::Rand();
+
+    // Apply it to both noise generators
+    SurfaceNoise.SetSeed(NewSeed);
+    CaveNoise.SetSeed(NewSeed);
+
+    // Regenerate the world
+    GenerateVoxelData();
+    GenerateMesh();
+}
+
 void AVoxelChunk::BeginPlay()
 {
     Super::BeginPlay();
+
+    // 1. FastNoise
+    // We use SimplexFractal directly as the noise type for the surface
+    SurfaceNoise.SetNoiseType(FastNoise::SimplexFractal);
+    SurfaceNoise.SetFrequency(SurfaceNoiseFrequency);
+    SurfaceNoise.SetFractalOctaves(4);
+
+    // Cellular noise creates great Swiss-cheese cave structures
+    CaveNoise.SetNoiseType(FastNoise::Cellular);
+    CaveNoise.SetFrequency(CaveNoiseFrequency);
+
     GenerateVoxelData();
     GenerateMesh();
 }
@@ -49,20 +74,105 @@ EVoxelType AVoxelChunk::GetVoxelType(const int32 X, const int32 Y, const int32 Z
 // Fill the memory with data
 void AVoxelChunk::GenerateVoxelData()
 {
-    // Reserve memory upfront to prevent reallocation overhead
     VoxelData.Init(EVoxelType::Empty, ChunkSize * ChunkSize * ChunkSize);
 
-    // Simple generation: Fill the bottom half with Dirt
-    for (int32 Z = 0; Z < ChunkSize; Z++)
+    const FVector ChunkWorldPos = GetActorLocation();
+    constexpr float VoxelSize = 100.0f;
+
+    for (int32 X = 0; X < ChunkSize; X++)
     {
         for (int32 Y = 0; Y < ChunkSize; Y++)
         {
-            for (int32 X = 0; X < ChunkSize; X++)
+            const float WorldX = ChunkWorldPos.X + (X * VoxelSize);
+            const float WorldY = ChunkWorldPos.Y + (Y * VoxelSize);
+
+            // RULE 1: The Base Continental Shape (Low Frequency)
+            // Multiplying WorldX/Y by 0.5f stretches the noise out, making huge, smooth rolling shapes
+            float BaseNoise = SurfaceNoise.GetNoise(WorldX * 0.5f, WorldY * 0.5f);
+            float NormalizedBase = (BaseNoise + 1.0f) / 2.0f;
+
+            // RULE 2: Terrain Shaping (The Exponent Trick)
+            // pow(x, 3.0) flattens the valleys (creating vast plains/lakes) and sharpens the peaks.
+            float ShapedHeight = FMath::Pow(NormalizedBase, 3.0f);
+
+            // RULE 3: Detail Noise (High Frequency)
+            // Multiplying by 2.0f gives us smaller, local bumps to make the terrain look natural
+            float DetailNoise = SurfaceNoise.GetNoise(WorldX * 2.0f, WorldY * 2.0f);
+            float NormalizedDetail = (DetailNoise + 1.0f) / 2.0f;
+
+            // Combine them: 90% massive continental shape, 10% local dirt bumps
+            float FinalHeightRatio = (ShapedHeight * 0.9f) + (NormalizedDetail * 0.1f);
+
+            // Calculate the absolute Z-index for the surface
+            const int32 SurfaceZ = FMath::RoundToInt(FinalHeightRatio * TerrainHeightVariation) + BaseTerrainHeight;
+
+            // Now loop down the vertical Z column
+            for (int32 Z = 0; Z < ChunkSize; Z++)
             {
-                if (Z < ChunkSize)
+                int32 VoxelIndex = GetVoxelIndex(X, Y, Z);
+                const float WorldZ = ChunkWorldPos.Z + (Z * VoxelSize);
+
+                // RULE 4: Air and Water
+                if (Z > SurfaceZ)
                 {
-                    VoxelData[GetVoxelIndex(X, Y, Z)] = EVoxelType::Dirt;
+                    if (Z <= SeaLevel)
+                    {
+                        VoxelData[VoxelIndex] = EVoxelType::Water;
+                    }
+                    continue;
                 }
+
+                // RULE 5: Stratification & Biomes
+                EVoxelType CurrentBlock = EVoxelType::Stone; // Default to solid stone underground
+
+                if (Z == SurfaceZ)
+                {
+                    // If we are at the bottom of a lake
+                    if (Z < SeaLevel) {
+                        CurrentBlock = EVoxelType::Dirt;
+                    }
+                    // If we are exactly at or just above the water line (Beaches/Shores)
+                    else if (Z <= SeaLevel + 2) {
+                        CurrentBlock = EVoxelType::Dirt;
+                    }
+                    // If we are really high up (Mountain Peaks)
+                    else if (Z >= BaseTerrainHeight + (TerrainHeightVariation * 0.65f)) {
+                        CurrentBlock = EVoxelType::Stone;
+                    }
+                    // Standard flatlands and hills
+                    else {
+                        CurrentBlock = EVoxelType::Grass;
+                    }
+                }
+                else if (Z < SurfaceZ && Z >= SurfaceZ - 3)
+                {
+                    CurrentBlock = EVoxelType::Dirt; // 3 layers of dirt under the surface
+                }
+
+                // RULE 6: Cave Generation & Minerals (Keep your existing cave logic here!)
+                if (Z <= SurfaceZ - 2)
+                {
+                    const float CaveNoiseVal = CaveNoise.GetNoise(WorldX, WorldY, WorldZ);
+                    const float DepthPercentage = FMath::Clamp(static_cast<float>(SurfaceZ - Z) / 8.0f, 0.0f, 1.0f);
+
+                    if (CaveNoiseVal + (1.0f - DepthPercentage) < CaveThreshold)
+                    {
+                        CurrentBlock = EVoxelType::Empty;
+                    }
+                    else if (CurrentBlock == EVoxelType::Stone)
+                    {
+                        const float AbsoluteDepthRatio = 1.0f - (static_cast<float>(Z) / static_cast<float>(ChunkSize));
+                        const float MineralRoll = FMath::FRand();
+
+                        if (AbsoluteDepthRatio > 0.8f && MineralRoll < 0.02f) {
+                            CurrentBlock = EVoxelType::Diamond;
+                        } else if (AbsoluteDepthRatio > 0.3f && MineralRoll < 0.05f) {
+                            CurrentBlock = EVoxelType::Coal;
+                        }
+                    }
+                }
+
+                VoxelData[VoxelIndex] = CurrentBlock;
             }
         }
     }

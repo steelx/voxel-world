@@ -39,6 +39,10 @@ public:
 	AVoxelChunk();
 	virtual void OnConstruction(const FTransform& Transform) override;
 
+	// Randomizes the noise seeds and regenerates the chunk
+	UFUNCTION(BlueprintCallable, Category = "Voxel|Generation")
+	void RandomizeSeed();
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -60,6 +64,25 @@ protected:
 	// Pick a specific voxel coordinate to debug (e.g., 0, 15, 15 for the Back face)
 	UPROPERTY(EditAnywhere, Category = "Voxel|Debug")
 	FIntVector DebugVoxelCoordinate = FIntVector(0, 0, 15);
+
+	// Terrain Generation Parameters
+	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
+	float SeaLevel = 10.0f; // The absolute Z-index where water spawns
+
+	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
+	float BaseTerrainHeight = 12.0f; // The lowest point the solid ground can be
+
+	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
+	float TerrainHeightVariation = 15.0f; // How tall the hills can get above the base
+
+	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
+	float CaveThreshold = -0.2f; // Lower number = fewer caves. Range: -1.0 to 1.0
+
+	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
+	float SurfaceNoiseFrequency = 0.001f; // 0.001f to 0.005f
+
+	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
+	float CaveNoiseFrequency = 0.005f; // 0.005f to 0.015f
 
 	// The dimensions of our chunk. 32x32x32 = 32,768 blocks.
 	const int32 ChunkSize = 32;

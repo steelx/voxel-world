@@ -16,7 +16,9 @@ enum class EVoxelType : uint8
 	Grass UMETA(DisplayName = "Grass"),
 	Stone UMETA(DisplayName = "Stone"),
 	Water UMETA(DisplayName = "Water"),
-	Lava  UMETA(DisplayName = "Lava")
+	Lava  UMETA(DisplayName = "Lava"),
+	Coal  UMETA(DisplayName = "Coal"),
+	Diamond UMETA(DisplayName = "Diamond")
 };
 
 // The Voxel Properties
