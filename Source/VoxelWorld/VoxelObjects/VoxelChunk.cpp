@@ -23,6 +23,13 @@ void AVoxelChunk::OnConstruction(const FTransform& Transform)
     GenerateMesh();
 }
 
+void AVoxelChunk::BeginPlay()
+{
+    Super::BeginPlay();
+    GenerateVoxelData();
+    GenerateMesh();
+}
+
 // 1D Flattening Math
 int32 AVoxelChunk::GetVoxelIndex(const int32 X, const int32 Y, const int32 Z) const
 {
@@ -141,7 +148,7 @@ void AVoxelChunk::GenerateMesh()
                         const int32 StartZ = bIsZAxis ? Slice : V;
                         FVector BlockPos(StartX * 100.0f, StartY * 100.0f, StartZ * 100.0f);
 
-                        AddFace(Vertices, Triangles, Normals, UVs, VertexCount, BlockPos, FaceDirection, Width, Height);
+                        AddFace(Vertices, Triangles, Normals, UVs, VertexColors, VertexCount, BlockPos, FaceDirection, Width, Height, MaskType);
 
                         for (int32 y = 0; y < Height; y++)
                         {
@@ -163,7 +170,10 @@ void AVoxelChunk::GenerateMesh()
     }
 }
 
-void AVoxelChunk::AddFace(TArray<FVector>& Vertices, TArray<int32>& Triangles, TArray<FVector>& Normals, TArray<FVector2D>& UVs, int32& VertexCount, const FVector& BlockPos, const int32 FaceIndex, const int32 Width, const int32 Height)
+void AVoxelChunk::AddFace(
+    TArray<FVector>& Vertices, TArray<int32>& Triangles, TArray<FVector>& Normals, TArray<FVector2D>& UVs,
+    TArray<FLinearColor>& VertexColors, int32& VertexCount, const FVector& BlockPos, const int32 FaceIndex,
+    const int32 Width, const int32 Height, const EVoxelType BlockType) const
 {
     // 1. Calculate the scaled dimensions for this specific face
     float X_Scale = 1.0f, Y_Scale = 1.0f, Z_Scale = 1.0f;
@@ -178,24 +188,44 @@ void AVoxelChunk::AddFace(TArray<FVector>& Vertices, TArray<int32>& Triangles, T
             X_Scale = Width; Z_Scale = Height; break;
     }
 
-    // 4. Convert our scales into actual Unreal Engine distance (100cm blocks)
-    FVector ScaleVec(X_Scale * 100.0f, Y_Scale * 100.0f, Z_Scale * 100.0f);
+    // 2. Convert our scales into actual Unreal Engine distance (100cm blocks)
+    const FVector ScaleVec(X_Scale * 100.0f, Y_Scale * 100.0f, Z_Scale * 100.0f);
 
-    // 5. Append Vertices and Normals
-    for (int i = 0; i < 4; i++)
+    // 3. Query the DataTable for the Atlas Coordinate
+    FVector2D AtlasCoord = FVector2D(0, 0); // Default fallback
+    int32 TextureBlockSize = 16; // Default grid size
+
+    if (const FVoxelBlockData* Data = GetBlockData(BlockType))
     {
-        // We multiply the 0-1 unit corner by our Greedy Scale to stretch the face
-        Vertices.Add(BlockPos + (VertexBlock[FaceVertices[FaceIndex][i]] * ScaleVec));
-        Normals.Add(FaceNormals[FaceIndex]);
+        // Store the tile coordinates and the grid size
+        AtlasCoord = Data->AtlasCoordinate;
+        TextureBlockSize = Data->TextureBlockSize;
     }
 
-    // 6. Scaled UV Mapping based on the lookup table's specific order
+    // Atlas FIX: Normalize the X, Y coordinates to [0.0, 1.0] before assigning to Vertex Color!
+    // This prevents the engine from clamping our values > 1.0
+    const FLinearColor FaceColor(
+        AtlasCoord.X / TextureBlockSize,
+        AtlasCoord.Y / TextureBlockSize,
+        0.0f,
+        1.0f
+    );
+
+    // 4. Append Vertices, Normals, and Colors
+    for (int i = 0; i < 4; i++)
+    {
+        Vertices.Add(BlockPos + (VertexBlock[FaceVertices[FaceIndex][i]] * ScaleVec));
+        Normals.Add(FaceNormals[FaceIndex]);
+        VertexColors.Add(FaceColor); // GPU receives the (X,Y) coordinate here!
+    }
+
+    // 5. Scaled UV Mapping based on the lookup table's specific order
     UVs.Add(FVector2D(0, Height));      // Bottom-Left
     UVs.Add(FVector2D(0, 0));           // Top-Left
     UVs.Add(FVector2D(Width, 0));       // Top-Right
     UVs.Add(FVector2D(Width, Height));  // Bottom-Right
 
-    // 7. reversed Clockwise Triangles!
+    // 6. reversed Clockwise Triangles!
     Triangles.Add(VertexCount + 0);
     Triangles.Add(VertexCount + 2);
     Triangles.Add(VertexCount + 1);
@@ -205,4 +235,29 @@ void AVoxelChunk::AddFace(TArray<FVector>& Vertices, TArray<int32>& Triangles, T
     Triangles.Add(VertexCount + 2);
 
     VertexCount += 4;
+}
+
+FVoxelBlockData* AVoxelChunk::GetBlockData(EVoxelType BlockType) const
+{
+    // Reflection Magic: This safely extracts the raw text name of the Enum (e.g., "Dirt", "Grass")
+    const FString EnumName = StaticEnum<EVoxelType>()->GetNameStringByValue(static_cast<int64>(BlockType));
+    // Safety check: Don't query if the table is missing or the block is Air
+    if (!BlockDataTable || BlockType == EVoxelType::Empty)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("BlockDataTable is null or BlockType - %s - is Empty"), *EnumName);
+        return nullptr;
+    }
+
+    // Search the DataTable for a Row Name that exactly matches our Enum name
+    FVoxelBlockData* Result = BlockDataTable->FindRow<FVoxelBlockData>(FName(*EnumName), TEXT("VoxelDataLookup"));
+    if (!Result)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[GetBlockData] Could not find block data for: %s"), *EnumName);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log, TEXT("[GetBlockData] Found block data for: %s, AtlasCoord: (%f, %f)"), *EnumName, Result->AtlasCoordinate.X, Result->AtlasCoordinate.Y);
+    }
+
+    return Result;
 }

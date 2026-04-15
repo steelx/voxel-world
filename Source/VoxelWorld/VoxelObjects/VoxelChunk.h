@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "FastNoise.h"
 #include "VoxelBlockData.h"
 #include "GameFramework/Actor.h"
 #include "VoxelChunk.generated.h"
@@ -36,9 +37,14 @@ class AVoxelChunk : public AActor
 
 public:
 	AVoxelChunk();
+	virtual void OnConstruction(const FTransform& Transform) override;
 
 protected:
-	virtual void OnConstruction(const FTransform& Transform) override;
+	virtual void BeginPlay() override;
+
+	// The reference to our Editor DataTable
+	UPROPERTY(EditAnywhere, Category="Voxel|Data")
+	UDataTable* BlockDataTable;
 
 	UPROPERTY(EditAnywhere, Category = "Voxel")
 	UMaterialInterface* VoxelMaterial;
@@ -69,8 +75,10 @@ protected:
 	// The lifecycle functions
 	void GenerateVoxelData();
 	void GenerateMesh();
-	void AddFace(TArray<FVector>& Vertices, TArray<int32>& Triangles, TArray<FVector>& Normals, TArray<FVector2D>& UVs, int32& VertexCount, const FVector& BlockPos, const int32 FaceIndex, const int32 Width, const int32 Height);
+	void AddFace(TArray<FVector>& Vertices, TArray<int32>& Triangles, TArray<FVector>& Normals, TArray<FVector2D>& UVs, TArray<FLinearColor>& VertexColors, int32& VertexCount, const FVector& BlockPos, const int32 FaceIndex, const int32 Width, const int32 Height, const EVoxelType BlockType) const;
 
+	// Helper function to query the table
+	FVoxelBlockData* GetBlockData(EVoxelType BlockType) const;
 private:
 	// A static helper array representing the 6 directional neighbors (Top, Bottom, Front, Back, Right, Left)
 	const FIntVector FaceOffsets[6] = {
@@ -114,4 +122,9 @@ private:
 		FVector(0, 1, 0),  // Right
 		FVector(0, -1, 0)  // Left
 	};
+
+private:
+	// Raw C++ objects are blazing fast. We don't use UPROPERTY here.
+	FastNoise SurfaceNoise;
+	FastNoise CaveNoise;
 };

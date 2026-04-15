@@ -27,20 +27,28 @@ struct FVoxelBlockData : public FTableRowBase
 	GENERATED_BODY()
 
 	// Does this block stop the player from walking through it?
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voxel Properties")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voxel|Properties")
 	bool bIsSolid = true;
 
 	// Does this block let light/sight through? (Crucial for greedy meshing logic later)
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voxel Properties")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voxel|Properties")
 	bool bIsTransparent = false;
 
 	// The sound played when the block is destroyed
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voxel Audio")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voxel|Audio")
 	USoundBase* BreakSound = nullptr;
 
 	// The sound played when the player walks on it
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voxel Audio")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voxel|Audio")
 	USoundBase* FootstepSound = nullptr;
 
-	// Future expansion: We will add Texture/UV Atlas coordinates here
+	// The color that will be passed to the Vertex Color buffer
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voxel|Visuals")
+	FLinearColor BlockColor = FLinearColor::White;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voxel|Visuals")
+	FVector2D AtlasCoordinate = FVector2D(0, 0);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voxel|Visuals")
+	float TextureBlockSize {16};
 };
