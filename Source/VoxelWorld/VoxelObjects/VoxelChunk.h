@@ -84,8 +84,12 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
 	float CaveNoiseFrequency = 0.005f; // 0.005f to 0.015f
 
+	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
+	float BiomeNoiseFrequency = 0.0002f;
+
 	// The dimensions of our chunk. 32x32x32 = 32,768 blocks.
-	const int32 ChunkSize = 32;
+	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
+	int32 ChunkSize = 32;
 
 	// The Model: Our 1D array of 8-bit Enums.
 	TArray<EVoxelType> VoxelData;
@@ -150,4 +154,5 @@ private:
 	// Raw C++ objects are blazing fast. We don't use UPROPERTY here.
 	FastNoise SurfaceNoise;
 	FastNoise CaveNoise;
+	FastNoise BiomeNoise;
 };

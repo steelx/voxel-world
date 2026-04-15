@@ -19,29 +19,12 @@ void AVoxelChunk::OnConstruction(const FTransform& Transform)
 {
     Super::OnConstruction(Transform);
 
-    GenerateVoxelData();
-    GenerateMesh();
+    RandomizeSeed();
 }
 
 void AVoxelChunk::RandomizeSeed()
 {
-    // Generate a random 32-bit integer
-    const int32 NewSeed = FMath::Rand();
-
-    // Apply it to both noise generators
-    SurfaceNoise.SetSeed(NewSeed);
-    CaveNoise.SetSeed(NewSeed);
-
-    // Regenerate the world
-    GenerateVoxelData();
-    GenerateMesh();
-}
-
-void AVoxelChunk::BeginPlay()
-{
-    Super::BeginPlay();
-
-    // 1. FastNoise
+    /// FastNoise
     // We use SimplexFractal directly as the noise type for the surface
     SurfaceNoise.SetNoiseType(FastNoise::SimplexFractal);
     SurfaceNoise.SetFrequency(SurfaceNoiseFrequency);
@@ -51,8 +34,29 @@ void AVoxelChunk::BeginPlay()
     CaveNoise.SetNoiseType(FastNoise::Cellular);
     CaveNoise.SetFrequency(CaveNoiseFrequency);
 
+    // BIOME NOISE
+    BiomeNoise.SetNoiseType(FastNoise::Cellular);
+    BiomeNoise.SetCellularReturnType(FastNoise::CellValue); // Gives flat, distinct regions
+    BiomeNoise.SetCellularDistanceFunction(FastNoise::Natural); // Organic borders
+    BiomeNoise.SetFrequency(BiomeNoiseFrequency);
+
+    // Generate a random 32-bit integer
+    const int32 NewSeed = FMath::Rand();
+
+    // Apply it to both noise generators
+    SurfaceNoise.SetSeed(NewSeed);
+    CaveNoise.SetSeed(NewSeed);
+    BiomeNoise.SetSeed(NewSeed);
+
+    // Regenerate the world
     GenerateVoxelData();
     GenerateMesh();
+}
+
+void AVoxelChunk::BeginPlay()
+{
+    Super::BeginPlay();
+    RandomizeSeed();
 }
 
 // 1D Flattening Math
@@ -86,67 +90,66 @@ void AVoxelChunk::GenerateVoxelData()
             const float WorldX = ChunkWorldPos.X + (X * VoxelSize);
             const float WorldY = ChunkWorldPos.Y + (Y * VoxelSize);
 
-            // RULE 1: The Base Continental Shape (Low Frequency)
-            // Multiplying WorldX/Y by 0.5f stretches the noise out, making huge, smooth rolling shapes
-            float BaseNoise = SurfaceNoise.GetNoise(WorldX * 0.5f, WorldY * 0.5f);
-            float NormalizedBase = (BaseNoise + 1.0f) / 2.0f;
+            // 1. DETERMINE BIOME (Returns a value roughly between -1.0 and 1.0)
+            const float BiomeVal = BiomeNoise.GetNoise(WorldX, WorldY);
 
-            // RULE 2: Terrain Shaping (The Exponent Trick)
-            // pow(x, 3.0) flattens the valleys (creating vast plains/lakes) and sharpens the peaks.
-            float ShapedHeight = FMath::Pow(NormalizedBase, 3.0f);
+            // Fetch the base surface noise [0.0 to 1.0] to be manipulated by the biome
+            const float RawSurfaceNoise = (SurfaceNoise.GetNoise(WorldX, WorldY) + 1.0f) / 2.0f;
 
-            // RULE 3: Detail Noise (High Frequency)
-            // Multiplying by 2.0f gives us smaller, local bumps to make the terrain look natural
-            float DetailNoise = SurfaceNoise.GetNoise(WorldX * 2.0f, WorldY * 2.0f);
-            float NormalizedDetail = (DetailNoise + 1.0f) / 2.0f;
+            int32 SurfaceZ = 0;
+            EVoxelType SurfaceBlock = EVoxelType::Grass;
+            EVoxelType SubSurfaceBlock = EVoxelType::Dirt;
 
-            // Combine them: 90% massive continental shape, 10% local dirt bumps
-            float FinalHeightRatio = (ShapedHeight * 0.9f) + (NormalizedDetail * 0.1f);
+            // 2. BIOME OVER TERRAIN LOGIC
+            if (BiomeVal < -0.3f)
+            {
+                // BIOME A: Oceans / Swamps
+                // Flat terrain, set entirely below or right at Sea Level.
+                SurfaceZ = FMath::RoundToInt(RawSurfaceNoise * 4.0f) + (SeaLevel - 2);
+                SurfaceBlock = EVoxelType::Dirt; // Mud/Sand
+                SubSurfaceBlock = EVoxelType::Dirt;
+            }
+            else if (BiomeVal < 0.4f)
+            {
+                // BIOME B: Grassy Plains / Hills
+                // Gentle exponent, standard height variation.
+                const float PlainsHeight = FMath::Pow(RawSurfaceNoise, 1.5f);
+                SurfaceZ = FMath::RoundToInt(PlainsHeight * 20.0f) + BaseTerrainHeight;
+                SurfaceBlock = EVoxelType::Grass;
+                SubSurfaceBlock = EVoxelType::Dirt;
+            }
+            else
+            {
+                // BIOME C: Extreme Mountains
+                // High exponent for sharp peaks, heavily elevated base height.
+                float MountainHeight = FMath::Pow(RawSurfaceNoise, 3.0f);
+                SurfaceZ = FMath::RoundToInt(MountainHeight * 45.0f) + BaseTerrainHeight + 10;
+                SurfaceBlock = EVoxelType::Stone; // Bare rock peaks
+                SubSurfaceBlock = EVoxelType::Stone;
+            }
 
-            // Calculate the absolute Z-index for the surface
-            const int32 SurfaceZ = FMath::RoundToInt(FinalHeightRatio * TerrainHeightVariation) + BaseTerrainHeight;
-
-            // Now loop down the vertical Z column
+            // 3. FILL THE VERTICAL COLUMN
             for (int32 Z = 0; Z < ChunkSize; Z++)
             {
                 int32 VoxelIndex = GetVoxelIndex(X, Y, Z);
                 const float WorldZ = ChunkWorldPos.Z + (Z * VoxelSize);
 
-                // RULE 4: Air and Water
                 if (Z > SurfaceZ)
                 {
-                    if (Z <= SeaLevel)
-                    {
-                        VoxelData[VoxelIndex] = EVoxelType::Water;
-                    }
+                    if (Z <= SeaLevel) VoxelData[VoxelIndex] = EVoxelType::Water;
                     continue;
                 }
 
-                // RULE 5: Stratification & Biomes
-                EVoxelType CurrentBlock = EVoxelType::Stone; // Default to solid stone underground
+                // Apply Biome-specific Stratification
+                EVoxelType CurrentBlock = EVoxelType::Stone;
 
                 if (Z == SurfaceZ)
                 {
-                    // If we are at the bottom of a lake
-                    if (Z < SeaLevel) {
-                        CurrentBlock = EVoxelType::Dirt;
-                    }
-                    // If we are exactly at or just above the water line (Beaches/Shores)
-                    else if (Z <= SeaLevel + 2) {
-                        CurrentBlock = EVoxelType::Dirt;
-                    }
-                    // If we are really high up (Mountain Peaks)
-                    else if (Z >= BaseTerrainHeight + (TerrainHeightVariation * 0.65f)) {
-                        CurrentBlock = EVoxelType::Stone;
-                    }
-                    // Standard flatlands and hills
-                    else {
-                        CurrentBlock = EVoxelType::Grass;
-                    }
+                    CurrentBlock = SurfaceBlock;
                 }
-                else if (Z < SurfaceZ && Z >= SurfaceZ - 3)
+                else if (Z < SurfaceZ && Z >= SurfaceZ - 4)
                 {
-                    CurrentBlock = EVoxelType::Dirt; // 3 layers of dirt under the surface
+                    CurrentBlock = SubSurfaceBlock;
                 }
 
                 // RULE 6: Cave Generation & Minerals (Keep your existing cave logic here!)
@@ -273,11 +276,12 @@ void AVoxelChunk::GenerateMesh()
         }
     }
 
-    MeshComponent->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UVs, VertexColors, TArray<FProcMeshTangent>(), true);
     if (VoxelMaterial)
     {
         MeshComponent->SetMaterial(0, VoxelMaterial);
     }
+
+    MeshComponent->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UVs, VertexColors, TArray<FProcMeshTangent>(), true);
 }
 
 void AVoxelChunk::AddFace(
