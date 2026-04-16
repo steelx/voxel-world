@@ -198,6 +198,17 @@ private:
 	*/
 	FVoxelStructure MakeLavaPool() const;
 
+	/*
+	* THE TERRAFORMER: MakeLake()
+	* Concept: A shallow, organic bowl carved into the terrain.
+	* Shape: A 15x15x7 squashed sphere.
+	* Layers:
+	* - Top (Z=5,6): Empty (Carves away hills/grass above the lake)
+	* - Mid (Z=2,3,4): Water
+	* - Bottom (Z=0,1): Dirt (The lakebed lining)
+	*/
+	FVoxelStructure MakeLake() const;
+
 	// Safely pastes a structure into the VoxelData array
 	void PasteStructure(const FVoxelStructure& Structure, int32 RootX, int32 RootY, int32 RootZ, bool bCanOverwriteSolid = false);
 };

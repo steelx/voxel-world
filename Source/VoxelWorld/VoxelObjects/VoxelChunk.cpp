@@ -197,11 +197,58 @@ void AVoxelChunk::GenerateVoxelData()
     // ==========================================
     // DECORATOR PASS (Structures & Flora)
     // ==========================================
-    const FVoxelStructure OakTree = MakeOakTree();
-    const FVoxelStructure CaveEntrance = MakeCaveEntrance();
-    const FVoxelStructure Dungeon = MakeDungeonRoom();
-    const FVoxelStructure Stalactite = MakeStalactite();
-    const FVoxelStructure LavaPool = MakeLavaPool();
+    // Because a lake changes the shape of the ground, we must generate Lakes before we generate Trees.
+    // If we place trees first, a lake might carve away the dirt underneath a tree, leaving floating wood in the sky.)
+    // ==========================================
+    FVoxelStructure CaveEntrance = MakeCaveEntrance();
+    FVoxelStructure Dungeon = MakeDungeonRoom();
+    FVoxelStructure Lake = MakeLake();
+
+    // We do one full scan of the chunk to carve the big shapes
+    for (int32 X = 0; X < ChunkSize; X++)
+    {
+        for (int32 Y = 0; Y < ChunkSize; Y++)
+        {
+            for (int32 Z = ChunkSize - 1; Z >= 0; Z--)
+            {
+                int32 Index = GetVoxelIndex(X, Y, Z);
+                EVoxelType CurrentType = VoxelData[Index];
+
+                // Check Surface
+                if (CurrentType == EVoxelType::Grass)
+                {
+                    const float Roll = FMath::FRand();
+                    if (Roll < 0.005f) { // 0.5% Chance to spawn a Lake
+
+                        // SINK THE LAKE: Paste it 4 blocks deep!
+                        // z=4 in the prefab (Water) will now perfectly align with Z (Grass)
+                        PasteStructure(Lake, X, Y, Z - 4, true);
+                    }
+                    else if (Roll > 0.995f) {
+                        PasteStructure(CaveEntrance, X, Y, Z + 2, true);
+                    }
+                    break;
+                }
+
+                // Check Underground
+                if (CurrentType == EVoxelType::Stone)
+                {
+                    if (Z > 10 && Z < 25 && FMath::FRand() < 0.0005f) {
+                        PasteStructure(Dungeon, X, Y, Z, true);
+                    }
+                }
+            }
+        }
+    }
+
+
+    // ==========================================
+    // MICRO-DRESSERS (Trees, Flora, Stalactites)
+    // ==========================================
+    // Now that the ground has been altered by lakes and caves, we scan AGAIN to plant trees!
+    FVoxelStructure OakTree = MakeOakTree();
+    FVoxelStructure Stalactite = MakeStalactite();
+    FVoxelStructure LavaPool = MakeLavaPool();
 
     for (int32 X = 0; X < ChunkSize; X++)
     {
@@ -209,39 +256,23 @@ void AVoxelChunk::GenerateVoxelData()
         {
             for (int32 Z = ChunkSize - 1; Z >= 0; Z--)
             {
-                const int32 Index = GetVoxelIndex(X, Y, Z);
-                const EVoxelType CurrentType = VoxelData[Index];
+                int32 Index = GetVoxelIndex(X, Y, Z);
+                EVoxelType CurrentType = VoxelData[Index];
 
-                // 1. SURFACE DECORATORS
                 if (CurrentType == EVoxelType::Grass)
                 {
-                    const float Roll = FMath::FRand();
-                    if (Roll < 0.015f) { // 1.5% Chance
+                    if (FMath::FRand() < 0.015f) { // 1.5% Chance for a tree
                         PasteStructure(OakTree, X, Y, Z + 1, false);
                     }
-                    else if (Roll > 0.995f) { // 0.5% Chance (Very Rare)
-                        // Paste carving tunnel, bCanOverwriteSolid = true!
-                        PasteStructure(CaveEntrance, X, Y, Z + 2, true);
-                    }
-                    break; // Stop scanning the sky column once we hit surface
+                    break; // Stop scanning
                 }
-
-                // 2. UNDERGROUND DECORATORS
-                if (CurrentType == EVoxelType::Stone)
+                else if (CurrentType == EVoxelType::Stone)
                 {
-                    // Look for flat floors deep down for Lava
                     if (Z < 10 && VoxelData[GetVoxelIndex(X, Y, Z+1)] == EVoxelType::Empty) {
                         if (FMath::FRand() < 0.005f) PasteStructure(LavaPool, X, Y, Z, true);
                     }
-
-                    // Look for ceilings for Stalactites
                     if (Z > 5 && VoxelData[GetVoxelIndex(X, Y, Z-1)] == EVoxelType::Empty) {
                         if (FMath::FRand() < 0.03f) PasteStructure(Stalactite, X, Y, Z - 4, false);
-                    }
-
-                    // Look for large areas for Dungeons (Mid-depths)
-                    if (Z > 10 && Z < 25) {
-                        if (FMath::FRand() < 0.0005f) PasteStructure(Dungeon, X, Y, Z, true);
                     }
                 }
             }
@@ -595,4 +626,42 @@ FVoxelStructure AVoxelChunk::MakeLavaPool() const
         }
     }
     return Pool;
+}
+
+FVoxelStructure AVoxelChunk::MakeLake() const
+{
+    FVoxelStructure Lake;
+    Lake.Init(15, 15, 7);
+
+    for (int x = 0; x < 15; x++) {
+        for (int y = 0; y < 15; y++) {
+
+            // Calculate flat 2D distance from the center of the lake
+            float Dist2D = FMath::Sqrt(FMath::Square(x - 7.0f) + FMath::Square(y - 7.0f));
+
+            // If we are inside the 15x15 circle
+            if (Dist2D <= 6.5f)
+            {
+                // BasinZ dictates the shape of the bowl.
+                // Center (Dist=0) -> BasinZ = 0 (Deepest part of the lake)
+                // Edge (Dist=6.5) -> BasinZ = 3 (Shallow shores)
+                int32 BasinZ = FMath::RoundToInt((Dist2D / 6.5f) * 3.0f);
+
+                // Build the column from bottom to top
+                for (int z = 0; z < 7; z++) {
+                    if (z > 4) {
+                        // Carve away the terrain above the water so it isn't buried
+                        Lake.SetBlock(x, y, z, EVoxelType::Empty);
+                    } else if (z > BasinZ) {
+                        // Fill the bowl with water
+                        Lake.SetBlock(x, y, z, EVoxelType::Water);
+                    } else if (z >= BasinZ - 1) {
+                        // Lay down a solid dirt crust to hold the water (guaranteed floor!)
+                        Lake.SetBlock(x, y, z, EVoxelType::Dirt);
+                    }
+                }
+            }
+        }
+    }
+    return Lake;
 }
