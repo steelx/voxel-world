@@ -152,18 +152,32 @@ void AVoxelChunk::GenerateVoxelData()
                     CurrentBlock = SubSurfaceBlock;
                 }
 
-                // RULE 6: Cave Generation & Minerals
-                if (Z <= SurfaceZ - 2)
+                // RULE 6: Organic Cave Generation (Depth Attenuated)
+                // We only want caves to start appearing well below the surface layer.
+                constexpr int32 CaveRoofDepth = 8; // How many solid blocks must exist below the surface
+                if (Z <= SurfaceZ - CaveRoofDepth)
                 {
+                    // Get the base cellular noise value (-1.0 to 1.0)
                     const float CaveNoiseVal = CaveNoise.GetNoise(WorldX, WorldY, WorldZ);
-                    const float DepthPercentage = FMath::Clamp(static_cast<float>(SurfaceZ - Z) / 8.0f, 0.0f, 1.0f);
 
-                    if (CaveNoiseVal + (1.0f - DepthPercentage) < CaveThreshold)
+                    // DEPTH ATTENUATION:
+                    // We calculate a ratio: 0.0 at the absolute bottom of the chunk, up to 1.0 at the CaveRoof boundary.
+                    const float DepthRatio = static_cast<float>(Z) / static_cast<float>(SurfaceZ - CaveRoofDepth);
+
+                    // We "harden" the rock as we get higher.
+                    // FMath::Pow(DepthRatio, 2.0f) means it gets solid very quickly near the roof.
+                    const float HardnessMultiplier = FMath::Pow(DepthRatio, 2.0f);
+
+                    // The higher we are, the more we artificially inflate the noise value, making it harder to drop below CaveThreshold.
+                    const float AttenuatedNoise = CaveNoiseVal + (HardnessMultiplier * 1.5f);
+
+                    if (AttenuatedNoise < CaveThreshold)
                     {
-                        CurrentBlock = EVoxelType::Empty;
+                        CurrentBlock = EVoxelType::Empty; // Carve the cave
                     }
                     else if (CurrentBlock == EVoxelType::Stone)
                     {
+                        // --- Mineral Spawning Logic ---
                         const float AbsoluteDepthRatio = 1.0f - (static_cast<float>(Z) / static_cast<float>(ChunkSize));
                         const float MineralRoll = FMath::FRand();
 
@@ -183,31 +197,52 @@ void AVoxelChunk::GenerateVoxelData()
     // ==========================================
     // DECORATOR PASS (Structures & Flora)
     // ==========================================
-    FVoxelStructure OakTree = MakeOakTree();
+    const FVoxelStructure OakTree = MakeOakTree();
+    const FVoxelStructure CaveEntrance = MakeCaveEntrance();
+    const FVoxelStructure Dungeon = MakeDungeonRoom();
+    const FVoxelStructure Stalactite = MakeStalactite();
+    const FVoxelStructure LavaPool = MakeLavaPool();
 
     for (int32 X = 0; X < ChunkSize; X++)
     {
         for (int32 Y = 0; Y < ChunkSize; Y++)
         {
-            // Scan from the top of the sky downwards to find the surface
             for (int32 Z = ChunkSize - 1; Z >= 0; Z--)
             {
-                int32 Index = GetVoxelIndex(X, Y, Z);
+                const int32 Index = GetVoxelIndex(X, Y, Z);
+                const EVoxelType CurrentType = VoxelData[Index];
 
-                if (VoxelData[Index] == EVoxelType::Grass)
+                // 1. SURFACE DECORATORS
+                if (CurrentType == EVoxelType::Grass)
                 {
-                    // We hit a grass block! Roll the 1.5% chance
-                    if (FMath::FRand() < TreeSpawnChance)
-                    {
-                        // Paste the tree sitting ON TOP of the grass (Z + 1)
+                    const float Roll = FMath::FRand();
+                    if (Roll < 0.015f) { // 1.5% Chance
                         PasteStructure(OakTree, X, Y, Z + 1, false);
                     }
-                    break; // Stop scanning this column once we hit the ground
+                    else if (Roll > 0.995f) { // 0.5% Chance (Very Rare)
+                        // Paste carving tunnel, bCanOverwriteSolid = true!
+                        PasteStructure(CaveEntrance, X, Y, Z + 2, true);
+                    }
+                    break; // Stop scanning the sky column once we hit surface
                 }
-                if (VoxelData[Index] != EVoxelType::Empty && VoxelData[Index] != EVoxelType::Leaves)
+
+                // 2. UNDERGROUND DECORATORS
+                if (CurrentType == EVoxelType::Stone)
                 {
-                    // We hit stone, water, or dirt instead of grass. Break.
-                    break;
+                    // Look for flat floors deep down for Lava
+                    if (Z < 10 && VoxelData[GetVoxelIndex(X, Y, Z+1)] == EVoxelType::Empty) {
+                        if (FMath::FRand() < 0.005f) PasteStructure(LavaPool, X, Y, Z, true);
+                    }
+
+                    // Look for ceilings for Stalactites
+                    if (Z > 5 && VoxelData[GetVoxelIndex(X, Y, Z-1)] == EVoxelType::Empty) {
+                        if (FMath::FRand() < 0.03f) PasteStructure(Stalactite, X, Y, Z - 4, false);
+                    }
+
+                    // Look for large areas for Dungeons (Mid-depths)
+                    if (Z > 10 && Z < 25) {
+                        if (FMath::FRand() < 0.0005f) PasteStructure(Dungeon, X, Y, Z, true);
+                    }
                 }
             }
         }
@@ -420,6 +455,43 @@ FVoxelBlockData* AVoxelChunk::GetBlockData(EVoxelType BlockType) const
     return Result;
 }
 
+void AVoxelChunk::PasteStructure(const FVoxelStructure& Structure, int32 RootX, int32 RootY, int32 RootZ, bool bCanOverwriteSolid)
+{
+    // Offset X and Y so the "Root" passed into the function is exactly the center of the bottom layer
+    const int32 OffsetX = Structure.SizeX / 2;
+    const int32 OffsetY = Structure.SizeY / 2;
+
+    for (int32 x = 0; x < Structure.SizeX; x++) {
+        for (int32 y = 0; y < Structure.SizeY; y++) {
+            for (int32 z = 0; z < Structure.SizeZ; z++) {
+
+                const EVoxelType BlockToPlace = Structure.GetBlock(x, y, z);
+
+                if (BlockToPlace != EVoxelType::Ignore) {
+                    const int32 TargetX = RootX + x - OffsetX;
+                    const int32 TargetY = RootY + y - OffsetY;
+                    const int32 TargetZ = RootZ + z;
+
+                    // BOUNDARY CHECK: Prevent spilling over the chunk edge!
+                    if (TargetX >= 0 && TargetX < ChunkSize &&
+                        TargetY >= 0 && TargetY < ChunkSize &&
+                        TargetZ >= 0 && TargetZ < ChunkSize)
+                    {
+                        const int32 TargetIndex = GetVoxelIndex(TargetX, TargetY, TargetZ);
+                        const EVoxelType ExistingBlock = VoxelData[TargetIndex];
+
+                        // Only overwrite if it's air, OR if we force it to carve into solid ground
+                        if (ExistingBlock == EVoxelType::Empty || bCanOverwriteSolid) {
+                            VoxelData[TargetIndex] = BlockToPlace;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 FVoxelStructure AVoxelChunk::MakeOakTree() const
 {
     FVoxelStructure Tree;
@@ -448,38 +520,79 @@ FVoxelStructure AVoxelChunk::MakeOakTree() const
     return Tree;
 }
 
-void AVoxelChunk::PasteStructure(const FVoxelStructure& Structure, int32 RootX, int32 RootY, int32 RootZ, bool bCanOverwriteSolid)
+FVoxelStructure AVoxelChunk::MakeCaveEntrance() const
 {
-    // Offset X and Y so the "Root" passed into the function is exactly the center of the bottom layer
-    const int32 OffsetX = Structure.SizeX / 2;
-    const int32 OffsetY = Structure.SizeY / 2;
+    FVoxelStructure Entrance;
+    Entrance.Init(5, 15, 15);
 
-    for (int32 x = 0; x < Structure.SizeX; x++) {
-        for (int32 y = 0; y < Structure.SizeY; y++) {
-            for (int32 z = 0; z < Structure.SizeZ; z++) {
+    // Carve a downward slanting tunnel along the Y axis
+    for (int y = 0; y < 15; y++) {
+        // As Y increases (moves forward), the center Z drops
+        const int zCenter = 13 - y;
 
-                const EVoxelType BlockToPlace = Structure.GetBlock(x, y, z);
+        for (int x = 1; x < 4; x++) { // 3 blocks wide
+            for (int z = zCenter - 1; z <= zCenter + 3; z++) { // 4 blocks tall
+                Entrance.SetBlock(x, y, z, EVoxelType::Empty); // The Drill
+            }
+        }
+    }
+    return Entrance;
+}
 
-                if (BlockToPlace != EVoxelType::Empty) {
-                    const int32 TargetX = RootX + x - OffsetX;
-                    const int32 TargetY = RootY + y - OffsetY;
-                    const int32 TargetZ = RootZ + z;
 
-                    // BOUNDARY CHECK: Prevent spilling over the chunk edge!
-                    if (TargetX >= 0 && TargetX < ChunkSize &&
-                        TargetY >= 0 && TargetY < ChunkSize &&
-                        TargetZ >= 0 && TargetZ < ChunkSize)
-                    {
-                        const int32 TargetIndex = GetVoxelIndex(TargetX, TargetY, TargetZ);
-                        const EVoxelType ExistingBlock = VoxelData[TargetIndex];
+FVoxelStructure AVoxelChunk::MakeDungeonRoom() const
+{
+    FVoxelStructure Dungeon;
+    Dungeon.Init(9, 9, 7);
 
-                        // Only overwrite if it's air, OR if we force it to carve into solid ground
-                        if (ExistingBlock == EVoxelType::Empty || bCanOverwriteSolid) {
-                            VoxelData[TargetIndex] = BlockToPlace;
-                        }
-                    }
+    for (int x = 0; x < 9; x++) {
+        for (int y = 0; y < 9; y++) {
+            for (int z = 0; z < 7; z++) {
+                // If it's the outer shell, place Cobblestone. Otherwise, carve Air.
+                if (x == 0 || x == 8 || y == 0 || y == 8 || z == 0 || z == 6) {
+                    Dungeon.SetBlock(x, y, z, EVoxelType::Cobblestone);
+                } else {
+                    Dungeon.SetBlock(x, y, z, EVoxelType::Empty); // Hollow inside
                 }
             }
         }
     }
+    return Dungeon;
+}
+
+
+FVoxelStructure AVoxelChunk::MakeStalactite() const
+{
+    FVoxelStructure Spike;
+    Spike.Init(3, 3, 4);
+
+    // Center pillar (longest)
+    for(int z = 0; z < 4; z++) Spike.SetBlock(1, 1, z, EVoxelType::Stone);
+
+    // Cross shape base (shorter)
+    Spike.SetBlock(1, 0, 3, EVoxelType::Stone);
+    Spike.SetBlock(1, 2, 3, EVoxelType::Stone);
+    Spike.SetBlock(0, 1, 3, EVoxelType::Stone);
+    Spike.SetBlock(2, 1, 3, EVoxelType::Stone);
+
+    return Spike;
+}
+
+
+FVoxelStructure AVoxelChunk::MakeLavaPool() const
+{
+    FVoxelStructure Pool;
+    Pool.Init(7, 7, 3);
+
+    for (int x = 0; x < 7; x++) {
+        for (int y = 0; y < 7; y++) {
+            // Cut off the absolute corners to make it circular
+            if ((x==0||x==6) && (y==0||y==6)) continue;
+
+            Pool.SetBlock(x, y, 0, EVoxelType::Stone); // The containing basin
+            Pool.SetBlock(x, y, 1, EVoxelType::Lava);  // The liquid
+            Pool.SetBlock(x, y, 2, EVoxelType::Empty); // Air above the lava to ensure space
+        }
+    }
+    return Pool;
 }
