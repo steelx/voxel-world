@@ -18,7 +18,41 @@ enum class EVoxelType : uint8
 	Water UMETA(DisplayName = "Water"),
 	Lava  UMETA(DisplayName = "Lava"),
 	Coal  UMETA(DisplayName = "Coal"),
-	Diamond UMETA(DisplayName = "Diamond")
+	Diamond UMETA(DisplayName = "Diamond"),
+	Wood  UMETA(DisplayName = "Wood"),
+	Leaves UMETA(DisplayName = "Leaves")
+};
+
+USTRUCT(BlueprintType)
+struct FVoxelStructure
+{
+	GENERATED_BODY()
+
+	int32 SizeX = 0;
+	int32 SizeY = 0;
+	int32 SizeZ = 0;
+	TArray<EVoxelType> Blocks;
+
+	// Initializes the 3D grid size for the prefab
+	void Init(int32 InX, int32 InY, int32 InZ) {
+		SizeX = InX; SizeY = InY; SizeZ = InZ;
+		Blocks.Init(EVoxelType::Empty, SizeX * SizeY * SizeZ);
+	}
+
+	// Safely sets a block inside the local prefab space
+	void SetBlock(int32 X, int32 Y, int32 Z, EVoxelType BlockType) {
+		if (X >= 0 && X < SizeX && Y >= 0 && Y < SizeY && Z >= 0 && Z < SizeZ) {
+			Blocks[X + (Y * SizeX) + (Z * SizeX * SizeY)] = BlockType;
+		}
+	}
+
+	// Retrieves a block from the prefab space
+	EVoxelType GetBlock(int32 X, int32 Y, int32 Z) const {
+		if (X >= 0 && X < SizeX && Y >= 0 && Y < SizeY && Z >= 0 && Z < SizeZ) {
+			return Blocks[X + (Y * SizeX) + (Z * SizeX * SizeY)];
+		}
+		return EVoxelType::Empty;
+	}
 };
 
 // The Voxel Properties

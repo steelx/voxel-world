@@ -97,10 +97,12 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
 	int32 ChunkSize = 32;
 
+	UPROPERTY(EditAnywhere, Category = "Voxel|Decorators")
+	float TreeSpawnChance = 0.015f; // 1.5% chance per grass block
+
+
 	// The Model: Our 1D array of 8-bit Enums.
 	TArray<EVoxelType> VoxelData;
-
-
 	// Helper to convert 3D coordinates (X,Y,Z) into our 1D array index
 	int32 GetVoxelIndex(const int32 X, const int32 Y, const int32 Z) const;
 	EVoxelType GetVoxelType(const int32 X, const int32 Y, const int32 Z) const;
@@ -156,9 +158,14 @@ private:
 		FVector(0, -1, 0)  // Left
 	};
 
-private:
 	// Raw C++ objects are blazing fast. We don't use UPROPERTY here.
 	FastNoise SurfaceNoise;
 	FastNoise CaveNoise;
 	FastNoise BiomeNoise;
+
+	// Generates the blueprint for a tree
+	FVoxelStructure MakeOakTree() const;
+
+	// Safely pastes a structure into the VoxelData array
+	void PasteStructure(const FVoxelStructure& Structure, int32 RootX, int32 RootY, int32 RootZ, bool bCanOverwriteSolid = false);
 };

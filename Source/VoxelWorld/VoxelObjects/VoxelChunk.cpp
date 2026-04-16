@@ -122,7 +122,7 @@ void AVoxelChunk::GenerateVoxelData()
             {
                 // BIOME C: Extreme Mountains
                 // High exponent for sharp peaks, heavily elevated base height.
-                float MountainHeight = FMath::Pow(RawSurfaceNoise, 3.0f);
+                const float MountainHeight = FMath::Pow(RawSurfaceNoise, 3.0f);
                 SurfaceZ = FMath::RoundToInt(MountainHeight * 45.0f) + BaseTerrainHeight + 10;
                 SurfaceBlock = EVoxelType::Stone; // Bare rock peaks
                 SubSurfaceBlock = EVoxelType::Stone;
@@ -131,7 +131,7 @@ void AVoxelChunk::GenerateVoxelData()
             // 3. FILL THE VERTICAL COLUMN
             for (int32 Z = 0; Z < ChunkSize; Z++)
             {
-                int32 VoxelIndex = GetVoxelIndex(X, Y, Z);
+                const int32 VoxelIndex = GetVoxelIndex(X, Y, Z);
                 const float WorldZ = ChunkWorldPos.Z + (Z * VoxelSize);
 
                 if (Z > SurfaceZ)
@@ -152,7 +152,7 @@ void AVoxelChunk::GenerateVoxelData()
                     CurrentBlock = SubSurfaceBlock;
                 }
 
-                // RULE 6: Cave Generation & Minerals (Keep your existing cave logic here!)
+                // RULE 6: Cave Generation & Minerals
                 if (Z <= SurfaceZ - 2)
                 {
                     const float CaveNoiseVal = CaveNoise.GetNoise(WorldX, WorldY, WorldZ);
@@ -176,6 +176,39 @@ void AVoxelChunk::GenerateVoxelData()
                 }
 
                 VoxelData[VoxelIndex] = CurrentBlock;
+            }
+        }
+    }
+
+    // ==========================================
+    // DECORATOR PASS (Structures & Flora)
+    // ==========================================
+    FVoxelStructure OakTree = MakeOakTree();
+
+    for (int32 X = 0; X < ChunkSize; X++)
+    {
+        for (int32 Y = 0; Y < ChunkSize; Y++)
+        {
+            // Scan from the top of the sky downwards to find the surface
+            for (int32 Z = ChunkSize - 1; Z >= 0; Z--)
+            {
+                int32 Index = GetVoxelIndex(X, Y, Z);
+
+                if (VoxelData[Index] == EVoxelType::Grass)
+                {
+                    // We hit a grass block! Roll the 1.5% chance
+                    if (FMath::FRand() < TreeSpawnChance)
+                    {
+                        // Paste the tree sitting ON TOP of the grass (Z + 1)
+                        PasteStructure(OakTree, X, Y, Z + 1, false);
+                    }
+                    break; // Stop scanning this column once we hit the ground
+                }
+                if (VoxelData[Index] != EVoxelType::Empty && VoxelData[Index] != EVoxelType::Leaves)
+                {
+                    // We hit stone, water, or dirt instead of grass. Break.
+                    break;
+                }
             }
         }
     }
@@ -207,17 +240,17 @@ void AVoxelChunk::GenerateMesh()
                 for (int32 U = 0; U < ChunkSize; U++)
                 {
                     // THE FIX: Bulletproof 2D-to-3D axis mapping
-                    int32 X = bIsXAxis ? Slice : U;
-                    int32 Y = bIsYAxis ? Slice : (bIsXAxis ? U : V);
-                    int32 Z = bIsZAxis ? Slice : V;
+                    const int32 X = bIsXAxis ? Slice : U;
+                    const int32 Y = bIsYAxis ? Slice : (bIsXAxis ? U : V);
+                    const int32 Z = bIsZAxis ? Slice : V;
 
-                    EVoxelType CurrentBlock = GetVoxelType(X, Y, Z);
+                    const EVoxelType CurrentBlock = GetVoxelType(X, Y, Z);
 
                     if (CurrentBlock != EVoxelType::Empty)
                     {
-                        int32 NeighborX = X + FaceOffsets[FaceDirection].X;
-                        int32 NeighborY = Y + FaceOffsets[FaceDirection].Y;
-                        int32 NeighborZ = Z + FaceOffsets[FaceDirection].Z;
+                        const int32 NeighborX = X + FaceOffsets[FaceDirection].X;
+                        const int32 NeighborY = Y + FaceOffsets[FaceDirection].Y;
+                        const int32 NeighborZ = Z + FaceOffsets[FaceDirection].Z;
 
                         if (GetVoxelType(NeighborX, NeighborY, NeighborZ) == EVoxelType::Empty)
                         {
@@ -232,7 +265,7 @@ void AVoxelChunk::GenerateMesh()
             {
                 for (int32 U = 0; U < ChunkSize; U++)
                 {
-                    EVoxelType MaskType = Mask[U + (V * ChunkSize)];
+                    const EVoxelType MaskType = Mask[U + (V * ChunkSize)];
 
                     if (MaskType != EVoxelType::Empty)
                     {
@@ -385,4 +418,68 @@ FVoxelBlockData* AVoxelChunk::GetBlockData(EVoxelType BlockType) const
     }
 
     return Result;
+}
+
+FVoxelStructure AVoxelChunk::MakeOakTree() const
+{
+    FVoxelStructure Tree;
+    Tree.Init(5, 5, 7); // A 5x5 wide box, 7 blocks tall
+
+    // 1. Build the Trunk (Center is X:2, Y:2)
+    for (int32 Z = 0; Z < 5; Z++) {
+        Tree.SetBlock(2, 2, Z, EVoxelType::Wood);
+    }
+
+    // 2. Build the Leaves (Spherical canopy)
+    for (int32 X = 0; X < 5; X++) {
+        for (int32 Y = 0; Y < 5; Y++) {
+            for (int32 Z = 3; Z < 7; Z++) {
+                // Don't overwrite the bottom of the trunk
+                if (X == 2 && Y == 2 && Z < 5) continue;
+
+                // Simple sphere check from center (2, 2, 4.5)
+                const float DistSq = FMath::Square(X - 2.0f) + FMath::Square(Y - 2.0f) + FMath::Square(Z - 4.5f);
+                if (DistSq <= 5.5f) {
+                    Tree.SetBlock(X, Y, Z, EVoxelType::Leaves);
+                }
+            }
+        }
+    }
+    return Tree;
+}
+
+void AVoxelChunk::PasteStructure(const FVoxelStructure& Structure, int32 RootX, int32 RootY, int32 RootZ, bool bCanOverwriteSolid)
+{
+    // Offset X and Y so the "Root" passed into the function is exactly the center of the bottom layer
+    const int32 OffsetX = Structure.SizeX / 2;
+    const int32 OffsetY = Structure.SizeY / 2;
+
+    for (int32 x = 0; x < Structure.SizeX; x++) {
+        for (int32 y = 0; y < Structure.SizeY; y++) {
+            for (int32 z = 0; z < Structure.SizeZ; z++) {
+
+                const EVoxelType BlockToPlace = Structure.GetBlock(x, y, z);
+
+                if (BlockToPlace != EVoxelType::Empty) {
+                    const int32 TargetX = RootX + x - OffsetX;
+                    const int32 TargetY = RootY + y - OffsetY;
+                    const int32 TargetZ = RootZ + z;
+
+                    // BOUNDARY CHECK: Prevent spilling over the chunk edge!
+                    if (TargetX >= 0 && TargetX < ChunkSize &&
+                        TargetY >= 0 && TargetY < ChunkSize &&
+                        TargetZ >= 0 && TargetZ < ChunkSize)
+                    {
+                        const int32 TargetIndex = GetVoxelIndex(TargetX, TargetY, TargetZ);
+                        const EVoxelType ExistingBlock = VoxelData[TargetIndex];
+
+                        // Only overwrite if it's air, OR if we force it to carve into solid ground
+                        if (ExistingBlock == EVoxelType::Empty || bCanOverwriteSolid) {
+                            VoxelData[TargetIndex] = BlockToPlace;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
