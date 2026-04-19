@@ -8,6 +8,7 @@
 #include "GameFramework/Actor.h"
 #include "VoxelChunk.generated.h"
 
+class UVoxelWorldObject;
 class UProceduralMeshComponent;
 
 
@@ -100,6 +101,24 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Voxel|Decorators")
 	float TreeSpawnChance = 0.015f; // 1.5% chance per grass block
 
+	UPROPERTY(EditAnywhere, Category = "Voxel|Assets")
+	UVoxelWorldObject* LakeAsset;
+
+	UPROPERTY(EditAnywhere, Category = "Voxel|Assets")
+	UVoxelWorldObject* CaveEntranceAsset;
+
+	UPROPERTY(EditAnywhere, Category = "Voxel|Assets")
+	UVoxelWorldObject* TreeAsset;
+
+	// icicle-shaped mineral deposits that hang from cave ceilings
+	UPROPERTY(EditAnywhere, Category = "Voxel|Assets")
+	UVoxelWorldObject* StalactiteAsset;
+
+	UPROPERTY(EditAnywhere, Category = "Voxel|Assets")
+	UVoxelWorldObject* DungeonRoomAsset;
+
+	UPROPERTY(EditAnywhere, Category = "Voxel|Assets")
+	UVoxelWorldObject* LavaPoolAsset;
 
 	// The Model: Our 1D array of 8-bit Enums.
 	TArray<EVoxelType> VoxelData;
@@ -162,52 +181,6 @@ private:
 	FastNoise SurfaceNoise;
 	FastNoise CaveNoise;
 	FastNoise BiomeNoise;
-
-	// Generates the blueprint for a tree
-	FVoxelStructure MakeOakTree() const;
-
-	/*
-	* THE SURFACE CONNECTOR: MakeCaveEntrance()
-	* Concept: Instead of a random hole in the ground, this designs a deliberate, walkable tunnel that slants downward.
-	* Shape: A 5x15x15 bounding box. Inside, we carve a stair-stepped, diagonal shaft of Air.
-	* Pasting: Forcefully carves a diagonal ramp through the topsoil and upper stone, perfectly punching into the deep cellular caves below.
-	*/
-	FVoxelStructure MakeCaveEntrance() const;
-
-	/*
-	* THE POINT OF INTEREST: MakeDungeonRoom()
-	* Concept: A buried, artificial room containing secrets or danger.
-	* Shape: A 9x9x7 box. The outer shell is Cobblestone. The interior volume is filled completely with Air.
-	* Pasting: Overwrites surrounding organic rock with perfectly straight cobblestone walls, guaranteeing a hollow room inside.
-	*/
-	FVoxelStructure MakeDungeonRoom() const;
-
-	/*
-	* THE MICRO-DECORATOR: MakeStalactite()
-	* Concept: Small, pointed rock formations hanging from the ceiling.
-	* Shape: A 3x3x4 spike. The center column drops 4 blocks, the surrounding cross drops 2.
-	* Pasting: Attached to Stone ceilings underground to break up flat surfaces.
-	*/
-	FVoxelStructure MakeStalactite() const;
-
-	/*
-	* THE HAZARD: MakeLavaPool()
-	* Concept: A pool of dangerous liquid nestled into the deep rock.
-	* Shape: A 7x7x3 cylinder. The bottom basin is Stone to prevent leaking, the top is Lava.
-	* Pasting: Nested into flat stone areas at the absolute bottom of the chunk.
-	*/
-	FVoxelStructure MakeLavaPool() const;
-
-	/*
-	* THE TERRAFORMER: MakeLake()
-	* Concept: A shallow, organic bowl carved into the terrain.
-	* Shape: A 15x15x7 squashed sphere.
-	* Layers:
-	* - Top (Z=5,6): Empty (Carves away hills/grass above the lake)
-	* - Mid (Z=2,3,4): Water
-	* - Bottom (Z=0,1): Dirt (The lakebed lining)
-	*/
-	FVoxelStructure MakeLake() const;
 
 	// Safely pastes a structure into the VoxelData array
 	void PasteStructure(const FVoxelStructure& Structure, int32 RootX, int32 RootY, int32 RootZ, bool bCanOverwriteSolid = false);
