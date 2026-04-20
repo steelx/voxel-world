@@ -298,27 +298,36 @@ void AVoxelChunk::GenerateVoxelData()
     // Because a lake changes the shape of the ground, we must generate Lakes before we generate Trees.
     // If we place trees first, a lake might carve away the dirt underneath a tree, leaving floating wood in the sky.)
     // World-Altering Pass (Lakes, Caves)
-    for (int32 X = 0; X < ChunkSize; X++) {
-        for (int32 Y = 0; Y < ChunkSize; Y++) {
-            for (int32 Z = ChunkSize - 1; Z >= 0; Z--) {
+
+    // 1. Create a Deterministic Random Stream seeded by this exact chunk's coordinates.
+    // This ensures this chunk rolls the exact same trees/caves every time it loads.
+    const int32 ChunkHash = GlobalSeed + (GridCoordinate.X * 73856) + (GridCoordinate.Y * 1920);
+    const FRandomStream PRNG(ChunkHash);
+
+    // 2. The Safe Margin: Must be larger than the radius of your biggest structure (e.g., half a Dungeon Room).
+    constexpr int32 SafeMargin = 6;
+
+    // 3. World-Altering Pass (Structures, Dungeons, Caves)
+    // We loop using the SafeMargin to prevent spilling over the borders.
+    for (int32 X = SafeMargin; X < ChunkSize - SafeMargin; X++) {
+        for (int32 Y = SafeMargin; Y < ChunkSize - SafeMargin; Y++) {
+            for (int32 Z = ChunkHeight - 1; Z >= 0; Z--) {
                 const EVoxelType CurrentType = GetVoxelType(X, Y, Z);
 
                 // Surface Structures
                 if (CurrentType == EVoxelType::Grass) {
-                    const float Roll = FMath::FRand();
-                    // if (LakeAsset && Roll < 0.005f) {
-                    //     CarveLake(X, Y, 8, 5); // Radius = 8, MaxDepth = 5
-                    // }
+                    // USE PRNG INSTEAD OF FMath::FRand()
+                    const float Roll = PRNG.FRand();
+
                     if (CaveEntranceAsset && Roll > 0.995f) {
                         PasteStructure(CaveEntranceAsset->GenerateStructure(), X, Y, Z + 2, true);
                     }
-                    break; // Surface found, move to next column
+                    break;
                 }
 
                 // Sub-Surface Structures
                 if (CurrentType == EVoxelType::Stone && DungeonRoomAsset) {
-                    // Only spawn in the mid-depth range
-                    if (Z > 10 && Z < 25 && FMath::FRand() < 0.0005f) {
+                    if (Z > 10 && Z < 25 && PRNG.FRand() < 0.0005f) {
                         PasteStructure(DungeonRoomAsset->GenerateStructure(), X, Y, Z, true);
                     }
                 }
@@ -331,29 +340,27 @@ void AVoxelChunk::GenerateVoxelData()
     // MICRO-DRESSERS (Trees, Flora, Stalactites)
     // ==========================================
     // We scan again because the Lake/Cave pass might have changed Grass to Water or Air.
-    if (TreeAsset || StalactiteAsset) {
-        for (int32 X = 0; X < ChunkSize; X++) {
-            for (int32 Y = 0; Y < ChunkSize; Y++) {
-                for (int32 Z = ChunkSize - 1; Z >= 0; Z--) {
+    if (TreeAsset || StalactiteAsset || LavaPoolAsset) {
+        // Trees can be closer to the edge, but still need a small margin (e.g., 2 blocks)
+        for (int32 X = 2; X < ChunkSize - 2; X++) {
+            for (int32 Y = 2; Y < ChunkSize - 2; Y++) {
+                for (int32 Z = ChunkHeight - 1; Z >= 0; Z--) {
                     const EVoxelType CurrentType = GetVoxelType(X, Y, Z);
 
                     if (CurrentType == EVoxelType::Grass && TreeAsset) {
-                        // Ensure the grass block has solid ground below it
-                        if (IsStableGround(X, Y, Z) && FMath::FRand() < TreeSpawnChance) {
+                        if (IsStableGround(X, Y, Z) && PRNG.FRand() < TreeSpawnChance) {
                             PasteStructure(TreeAsset->GenerateStructure(), X, Y, Z + 1, false);
                         }
                         break;
                     }
-                    else if (CurrentType == EVoxelType::Stone) {
-                        // LAVA POOLS (Deep floor check)
+                    if (CurrentType == EVoxelType::Stone) {
                         if (LavaPoolAsset && Z < 10 && GetVoxelType(X, Y, Z + 1) == EVoxelType::Empty) {
-                            if (FMath::FRand() < 0.005f) {
+                            if (PRNG.FRand() < 0.005f) {
                                 PasteStructure(LavaPoolAsset->GenerateStructure(), X, Y, Z, true);
                             }
                         }
-                        // STALACTITES (Ceiling check)
                         if (StalactiteAsset && Z > 5 && GetVoxelType(X, Y, Z - 1) == EVoxelType::Empty) {
-                            if (FMath::FRand() < 0.03f) {
+                            if (PRNG.FRand() < 0.03f) {
                                 PasteStructure(StalactiteAsset->GenerateStructure(), X, Y, Z - 4, false);
                             }
                         }
