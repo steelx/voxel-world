@@ -11,6 +11,14 @@
 class UVoxelWorldObject;
 class UProceduralMeshComponent;
 
+struct FChunkMeshData {
+	TArray<FVector> Vertices;
+	TArray<int32> Triangles;
+	TArray<FLinearColor> Colors;
+	TArray<FVector> Normals;
+	TArray<FVector2D> UVs;
+	std::atomic<bool> bIsDataReady{false}; // Thread-safe flag
+};
 
 /*
 * NAIVE MESHING: A 3x2 Wall of Dirt
@@ -38,15 +46,15 @@ class AVoxelChunk : public AActor
 
 public:
 	AVoxelChunk();
-	virtual void OnConstruction(const FTransform& Transform) override;
+	virtual void Tick(float DeltaTime) override;
+	// Manager will call InitializeChunk.
+	void InitializeChunk(const int32 InGlobalSeed, const FIntPoint InTargetCoord);
 
-	// Randomizes the noise seeds and regenerates the chunk
-	UFUNCTION(BlueprintCallable, Category = "Voxel|Generation")
-	void RandomizeSeed();
+	// This is the function the Worker will call
+	void DoBackgroundGeneration();
+
 
 protected:
-	virtual void BeginPlay() override;
-
 	// The reference to our Editor DataTable
 	UPROPERTY(EditAnywhere, Category="Voxel|Data")
 	UDataTable* BlockDataTable;
@@ -124,7 +132,9 @@ protected:
 	int32 GetVoxelIndex(const int32 X, const int32 Y, const int32 Z) const;
 	EVoxelType GetVoxelType(const int32 X, const int32 Y, const int32 Z) const;
 	// 2D index helper for column-based maps
-	FORCEINLINE int32 GetColumnIndex(const int32 X, const int32 Y) const { return X + Y * ChunkSize; }
+	FORCEINLINE int32 GetColumnIndex(const int32 X, const int32 Y) const {
+		return (X + 1) + (Y + 1) * (ChunkSize + 2);
+	}
 	// Finds the topmost solid (non-air, non-water) block in a column. Returns -1 if none.
 	int32 FindTopSolidZ(const int32 X, const int32 Y) const;
 	// Returns true if the block at (X,Y,Z) is solid ground suitable for a tree
@@ -134,9 +144,6 @@ protected:
 	void GenerateVoxelData();
 	void GenerateMesh();
 	void AddFace(TArray<FVector>& Vertices, TArray<int32>& Triangles, TArray<FVector>& Normals, TArray<FVector2D>& UVs, TArray<FLinearColor>& VertexColors, int32& VertexCount, const FVector& BlockPos, const int32 FaceIndex, const int32 Width, const int32 Height, const EVoxelType BlockType) const;
-
-	// Helper function to query the table
-	FVoxelBlockData* GetBlockData(EVoxelType BlockType) const;
 
 private:
 	// The Model: Our 1D array of 8-bit Enums.
@@ -195,10 +202,36 @@ private:
 	FastNoise BiomeNoise;
 	FastNoise BasinNoise;
 
+	FChunkMeshData AsyncMeshData;
+	int32 GlobalSeed;
+	FIntPoint GridCoordinate;
+
+	// A thread-safe snapshot of our block properties
+	TMap<EVoxelType, FVoxelBlockData> BlockDataCache;
+	// Helper function to query the table
+	const FVoxelBlockData* GetBlockData(EVoxelType BlockType) const;
+
 	// Safely pastes a structure into the VoxelData array
 	void PasteStructure(const FVoxelStructure& Structure, int32 RootX, int32 RootY, int32 RootZ, bool bCanOverwriteSolid = false);
 
 	// Carves a lake directly into the existing terrain using the cached heightmap.
 	// This replaces the Lake prefab stamping and guarantees the lake sits flush with the ground.
 	void CarveLake(int32 CenterX, int32 CenterY, int32 Radius, int32 MaxDepth);
+};
+
+
+// THE WORKER
+class FVoxelGenerationWorker : public FNonAbandonableTask {
+	AVoxelChunk* Chunk;
+public:
+	FVoxelGenerationWorker(AVoxelChunk* InChunk) : Chunk(InChunk) {}
+
+	// This runs on a separate CPU Core
+	void DoWork() {
+		Chunk->DoBackgroundGeneration();
+	}
+
+	FORCEINLINE TStatId GetStatId() const {
+		RETURN_QUICK_DECLARE_CYCLE_STAT(FVoxelGenerationWorker, STATGROUP_ThreadPoolAsyncTasks);
+	}
 };

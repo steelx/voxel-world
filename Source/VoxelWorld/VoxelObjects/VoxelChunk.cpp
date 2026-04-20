@@ -10,20 +10,66 @@
 // Sets default values
 AVoxelChunk::AVoxelChunk()
 {
+    PrimaryActorTick.bCanEverTick = true;
 	MeshComponent = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("ProceduralMeshComp"));
     SetRootComponent(MeshComponent);
     // Crucial for characters to walk on procedural meshes without falling!
     MeshComponent->bUseComplexAsSimpleCollision = true;
 }
 
-void AVoxelChunk::OnConstruction(const FTransform& Transform)
+void AVoxelChunk::Tick(float DeltaTime)
 {
-    Super::OnConstruction(Transform);
+    Super::Tick(DeltaTime);
 
-    RandomizeSeed();
+    // POLLING: Check if the background work is finished
+    if (AsyncMeshData.bIsDataReady) {
+        // APPLY TO GPU (Must happen on Game Thread)
+        MeshComponent->CreateMeshSection_LinearColor(0,
+            AsyncMeshData.Vertices, AsyncMeshData.Triangles, AsyncMeshData.Normals,
+            AsyncMeshData.UVs, AsyncMeshData.Colors, TArray<FProcMeshTangent>(), true);
+
+        // --- MATERIAL ---
+        if (bUseSolidColors && SolidMaterial)
+        {
+            MeshComponent->SetMaterial(0, SolidMaterial);
+        }
+        else if (!bUseSolidColors && VoxelMaterial)
+        {
+            MeshComponent->SetMaterial(0, VoxelMaterial);
+        }
+
+        AsyncMeshData.bIsDataReady = false; // Work is done!
+    }
 }
 
-void AVoxelChunk::RandomizeSeed()
+void AVoxelChunk::InitializeChunk(const int32 InGlobalSeed, const FIntPoint InTargetCoord)
+{
+    this->GlobalSeed = InGlobalSeed;
+    this->GridCoordinate = InTargetCoord;
+
+    // --- CREATE A THREAD-SAFE SNAPSHOT for GetBlockData ---
+    BlockDataCache.Empty();
+    if (BlockDataTable)
+    {
+        const UEnum* VoxelEnum = StaticEnum<EVoxelType>();
+        // Iterate through all Enum values and cache their DataTable rows
+        for (int32 i = 0; i < VoxelEnum->NumEnums() - 1; i++)
+        {
+            int64 EnumValue = VoxelEnum->GetValueByIndex(i);
+            FString EnumName = VoxelEnum->GetNameStringByIndex(i);
+
+            if (FVoxelBlockData* RowData = BlockDataTable->FindRow<FVoxelBlockData>(FName(*EnumName), TEXT("Cache")))
+            {
+                BlockDataCache.Add(static_cast<EVoxelType>(EnumValue), *RowData);
+            }
+        }
+    }
+
+    // Kick off the background thread!
+    (new FAutoDeleteAsyncTask<FVoxelGenerationWorker>(this))->StartBackgroundTask();
+}
+
+void AVoxelChunk::DoBackgroundGeneration()
 {
     /// FastNoise
     // We use SimplexFractal directly as the noise type for the surface
@@ -44,38 +90,33 @@ void AVoxelChunk::RandomizeSeed()
     BasinNoise.SetNoiseType(FastNoise::SimplexFractal);
     BasinNoise.SetFrequency(BasinNoiseFrequency);
 
-    // Generate a random 32-bit integer
-    const int32 NewSeed = FMath::Rand();
-
-    // Apply it to both noise generators
-    SurfaceNoise.SetSeed(NewSeed);
-    CaveNoise.SetSeed(NewSeed);
-    BiomeNoise.SetSeed(NewSeed);
-    BasinNoise.SetSeed(NewSeed);
+    // SEED
+    SurfaceNoise.SetSeed(GlobalSeed);
+    CaveNoise.SetSeed(GlobalSeed);
+    BiomeNoise.SetSeed(GlobalSeed);
+    BasinNoise.SetSeed(GlobalSeed);
 
     // Regenerate the world
     GenerateVoxelData();
     GenerateMesh();
-}
 
-void AVoxelChunk::BeginPlay()
-{
-    Super::BeginPlay();
-    RandomizeSeed();
+    AsyncMeshData.bIsDataReady = true; // Signal completion
 }
 
 // 1D Flattening Math
 int32 AVoxelChunk::GetVoxelIndex(const int32 X, const int32 Y, const int32 Z) const
 {
-    // The golden formula for 1D Array (https://eloquentjavascript.net/2nd_edition/07_elife.html)
-    return X + (Y * ChunkSize) + (Z * ChunkSize * ChunkSize);
+    const int32 PaddedSize = ChunkSize + 2;
+    // Shift local coordinates (-1 to 32) into array space (0 to 33)
+    return (X + 1) + ((Y + 1) * PaddedSize) + ((Z + 1) * PaddedSize * PaddedSize);
 }
 
 // Safe wrapper to prevent out-of-bounds array crashes
 EVoxelType AVoxelChunk::GetVoxelType(const int32 X, const int32 Y, const int32 Z) const
 {
-    if (X < 0 || X >= ChunkSize || Y < 0 || Y >= ChunkSize || Z < 0 || Z >= ChunkSize)
-        return EVoxelType::Empty; // Treat outside the chunk as air for now
+    // We only return Empty if it exceeds our PADDED boundary!
+    if (X < -1 || X > ChunkSize || Y < -1 || Y > ChunkSize || Z < -1 || Z > ChunkSize)
+        return EVoxelType::Empty;
 
     return VoxelData[GetVoxelIndex(X, Y, Z)];
 }
@@ -105,15 +146,17 @@ bool AVoxelChunk::IsStableGround(const int32 X, const int32 Y, const int32 Z) co
 // Fill the memory with data
 void AVoxelChunk::GenerateVoxelData()
 {
-    VoxelData.Init(EVoxelType::Empty, ChunkSize * ChunkSize * ChunkSize);
-    SurfaceHeightMap.Init(0, ChunkSize * ChunkSize);
+    const int32 PaddedSize = ChunkSize + 2; // 34x34x34
+    VoxelData.Init(EVoxelType::Empty, PaddedSize * PaddedSize * PaddedSize);
+    SurfaceHeightMap.Init(0, PaddedSize * PaddedSize);
 
     const FVector ChunkWorldPos = GetActorLocation();
     constexpr float VoxelSize = 100.0f;
 
-    for (int32 X = 0; X < ChunkSize; X++)
+    // Loop from -1 to ChunkSize (inclusive) to generate borders
+    for (int32 X = -1; X <= ChunkSize; X++)
     {
-        for (int32 Y = 0; Y < ChunkSize; Y++)
+        for (int32 Y = -1; Y <= ChunkSize; Y++)
         {
             const float WorldX = ChunkWorldPos.X + (X * VoxelSize);
             const float WorldY = ChunkWorldPos.Y + (Y * VoxelSize);
@@ -175,8 +218,8 @@ void AVoxelChunk::GenerateVoxelData()
             // Cache the final terrain height for decorators later
             SurfaceHeightMap[GetColumnIndex(X, Y)] = SurfaceZ;
 
-            // 3. FILL THE VERTICAL COLUMN
-            for (int32 Z = 0; Z < ChunkSize; Z++)
+            // 3. FILL THE VERTICAL COLUMN -- Loop Z from -1 to ChunkSize
+            for (int32 Z = -1; Z <= ChunkSize; Z++)
             {
                 const int32 VoxelIndex = GetVoxelIndex(X, Y, Z);
                 const float WorldZ = ChunkWorldPos.Z + (Z * VoxelSize);
@@ -322,11 +365,13 @@ void AVoxelChunk::GenerateVoxelData()
 // The Naive Surface Mesher
 void AVoxelChunk::GenerateMesh()
 {
-    TArray<FVector> Vertices;
-    TArray<int32> Triangles;
-    TArray<FVector> Normals;
-    TArray<FVector2D> UVs;
-    TArray<FLinearColor> VertexColors;
+    // Clear out the Async arrays for a clean slate
+    AsyncMeshData.Vertices.Empty();
+    AsyncMeshData.Triangles.Empty();
+    AsyncMeshData.Normals.Empty();
+    AsyncMeshData.UVs.Empty();
+    AsyncMeshData.Colors.Empty();
+
     int32 VertexCount = 0;
 
     for (int32 FaceDirection = 0; FaceDirection < 6; FaceDirection++)
@@ -393,13 +438,16 @@ void AVoxelChunk::GenerateMesh()
                             if (!bDone) Height++;
                         }
 
-                        // THE FIX: Match the Start positions perfectly with our clean axis mapping
+                        // Match the Start positions perfectly with our clean axis mapping
                         const int32 StartX = bIsXAxis ? Slice : U;
                         const int32 StartY = bIsYAxis ? Slice : (bIsXAxis ? U : V);
                         const int32 StartZ = bIsZAxis ? Slice : V;
                         FVector BlockPos(StartX * 100.0f, StartY * 100.0f, StartZ * 100.0f);
 
-                        AddFace(Vertices, Triangles, Normals, UVs, VertexColors, VertexCount, BlockPos, FaceDirection, Width, Height, MaskType);
+                        // PASS THE ASYNC ARRAYS INSTEAD OF LOCAL ONES
+                        AddFace(AsyncMeshData.Vertices, AsyncMeshData.Triangles, AsyncMeshData.Normals,
+                                AsyncMeshData.UVs, AsyncMeshData.Colors, VertexCount, BlockPos, FaceDirection,
+                                Width, Height, MaskType);
 
                         for (int32 y = 0; y < Height; y++)
                         {
@@ -413,18 +461,6 @@ void AVoxelChunk::GenerateMesh()
             }
         }
     }
-
-    // --- MATERIAL ---
-    if (bUseSolidColors && SolidMaterial)
-    {
-        MeshComponent->SetMaterial(0, SolidMaterial);
-    }
-    else if (!bUseSolidColors && VoxelMaterial)
-    {
-        MeshComponent->SetMaterial(0, VoxelMaterial);
-    }
-
-    MeshComponent->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UVs, VertexColors, TArray<FProcMeshTangent>(), true);
 }
 
 void AVoxelChunk::AddFace(
@@ -500,29 +536,10 @@ void AVoxelChunk::AddFace(
 }
 
 
-FVoxelBlockData* AVoxelChunk::GetBlockData(EVoxelType BlockType) const
+const FVoxelBlockData* AVoxelChunk::GetBlockData(EVoxelType BlockType) const
 {
-    // Reflection Magic: This safely extracts the raw text name of the Enum (e.g., "Dirt", "Grass")
-    const FString EnumName = StaticEnum<EVoxelType>()->GetNameStringByValue(static_cast<int64>(BlockType));
-    // Safety check: Don't query if the table is missing or the block is Air
-    if (!BlockDataTable || BlockType == EVoxelType::Empty)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("BlockDataTable is null or BlockType - %s - is Empty"), *EnumName);
-        return nullptr;
-    }
-
-    // Search the DataTable for a Row Name that exactly matches our Enum name
-    FVoxelBlockData* Result = BlockDataTable->FindRow<FVoxelBlockData>(FName(*EnumName), TEXT("VoxelDataLookup"));
-    if (!Result)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("[GetBlockData] Could not find block data for: %s"), *EnumName);
-    }
-    else
-    {
-        UE_LOG(LogTemp, Log, TEXT("[GetBlockData] Found block data for: %s, AtlasCoord: (%f, %f)"), *EnumName, Result->AtlasCoordinate.X, Result->AtlasCoordinate.Y);
-    }
-
-    return Result;
+    // THREAD-SAFE: Read purely from our local C++ cache. No UObjects touched!
+    return BlockDataCache.Find(BlockType);
 }
 
 void AVoxelChunk::PasteStructure(const FVoxelStructure& Structure, int32 RootX, int32 RootY, int32 RootZ, bool bCanOverwriteSolid)
