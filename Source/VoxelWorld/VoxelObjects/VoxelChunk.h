@@ -83,6 +83,9 @@ protected:
 	float TerrainHeightVariation = 15.0f; // How tall the hills can get above the base
 
 	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
+	float BasinNoiseFrequency = 0.003f;
+
+	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
 	float CaveThreshold = -0.2f; // Lower number = fewer caves. Range: -1.0 to 1.0
 
 	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
@@ -102,9 +105,6 @@ protected:
 	float TreeSpawnChance = 0.015f; // 1.5% chance per grass block
 
 	UPROPERTY(EditAnywhere, Category = "Voxel|Assets")
-	UVoxelWorldObject* LakeAsset;
-
-	UPROPERTY(EditAnywhere, Category = "Voxel|Assets")
 	UVoxelWorldObject* CaveEntranceAsset;
 
 	UPROPERTY(EditAnywhere, Category = "Voxel|Assets")
@@ -120,11 +120,15 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Voxel|Assets")
 	UVoxelWorldObject* LavaPoolAsset;
 
-	// The Model: Our 1D array of 8-bit Enums.
-	TArray<EVoxelType> VoxelData;
 	// Helper to convert 3D coordinates (X,Y,Z) into our 1D array index
 	int32 GetVoxelIndex(const int32 X, const int32 Y, const int32 Z) const;
 	EVoxelType GetVoxelType(const int32 X, const int32 Y, const int32 Z) const;
+	// 2D index helper for column-based maps
+	FORCEINLINE int32 GetColumnIndex(const int32 X, const int32 Y) const { return X + Y * ChunkSize; }
+	// Finds the topmost solid (non-air, non-water) block in a column. Returns -1 if none.
+	int32 FindTopSolidZ(const int32 X, const int32 Y) const;
+	// Returns true if the block at (X,Y,Z) is solid ground suitable for a tree
+	bool IsStableGround(const int32 X, const int32 Y, const int32 Z) const;
 
 	// The lifecycle functions
 	void GenerateVoxelData();
@@ -133,7 +137,15 @@ protected:
 
 	// Helper function to query the table
 	FVoxelBlockData* GetBlockData(EVoxelType BlockType) const;
+
 private:
+	// The Model: Our 1D array of 8-bit Enums.
+	TArray<EVoxelType> VoxelData;
+	// Cached per-column surface height from the terrain pass (size: ChunkSize * ChunkSize)
+	TArray<int32> SurfaceHeightMap;
+	// Marks (X,Y) columns where a lake has been carved. Blocks tree spawning on these.
+	TArray<bool> LakeMask;
+
 	// A static helper array representing the 6 directional neighbors (Top, Bottom, Front, Back, Right, Left)
 	const FIntVector FaceOffsets[6] = {
 		FIntVector(0, 0, 1),  // Top (Z+)
@@ -181,7 +193,12 @@ private:
 	FastNoise SurfaceNoise;
 	FastNoise CaveNoise;
 	FastNoise BiomeNoise;
+	FastNoise BasinNoise;
 
 	// Safely pastes a structure into the VoxelData array
 	void PasteStructure(const FVoxelStructure& Structure, int32 RootX, int32 RootY, int32 RootZ, bool bCanOverwriteSolid = false);
+
+	// Carves a lake directly into the existing terrain using the cached heightmap.
+	// This replaces the Lake prefab stamping and guarantees the lake sits flush with the ground.
+	void CarveLake(int32 CenterX, int32 CenterY, int32 Radius, int32 MaxDepth);
 };

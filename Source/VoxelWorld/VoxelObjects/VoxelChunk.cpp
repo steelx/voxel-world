@@ -41,6 +41,9 @@ void AVoxelChunk::RandomizeSeed()
     BiomeNoise.SetCellularDistanceFunction(FastNoise::Natural); // Organic borders
     BiomeNoise.SetFrequency(BiomeNoiseFrequency);
 
+    BasinNoise.SetNoiseType(FastNoise::SimplexFractal);
+    BasinNoise.SetFrequency(BasinNoiseFrequency);
+
     // Generate a random 32-bit integer
     const int32 NewSeed = FMath::Rand();
 
@@ -48,6 +51,7 @@ void AVoxelChunk::RandomizeSeed()
     SurfaceNoise.SetSeed(NewSeed);
     CaveNoise.SetSeed(NewSeed);
     BiomeNoise.SetSeed(NewSeed);
+    BasinNoise.SetSeed(NewSeed);
 
     // Regenerate the world
     GenerateVoxelData();
@@ -76,10 +80,33 @@ EVoxelType AVoxelChunk::GetVoxelType(const int32 X, const int32 Y, const int32 Z
     return VoxelData[GetVoxelIndex(X, Y, Z)];
 }
 
+int32 AVoxelChunk::FindTopSolidZ(const int32 X, const int32 Y) const
+{
+    for (int32 Z = ChunkSize - 1; Z >= 0; Z--)
+    {
+        const EVoxelType T = GetVoxelType(X, Y, Z);
+        if (T != EVoxelType::Empty && T != EVoxelType::Water && T != EVoxelType::Lava)
+        {
+            return Z;
+        }
+    }
+    return -1;
+}
+
+bool AVoxelChunk::IsStableGround(const int32 X, const int32 Y, const int32 Z) const
+{
+    // Must be on solid ground (not water/lava/air)
+    const EVoxelType Ground = GetVoxelType(X, Y, Z - 1);
+    return Ground != EVoxelType::Empty &&
+           Ground != EVoxelType::Water &&
+           Ground != EVoxelType::Lava;
+}
+
 // Fill the memory with data
 void AVoxelChunk::GenerateVoxelData()
 {
     VoxelData.Init(EVoxelType::Empty, ChunkSize * ChunkSize * ChunkSize);
+    SurfaceHeightMap.Init(0, ChunkSize * ChunkSize);
 
     const FVector ChunkWorldPos = GetActorLocation();
     constexpr float VoxelSize = 100.0f;
@@ -129,16 +156,41 @@ void AVoxelChunk::GenerateVoxelData()
                 SubSurfaceBlock = EVoxelType::Stone;
             }
 
+            // GEOGRAPHICAL BASIN CARVING (LAKES)
+            // We evaluate basin noise (0.0 to 1.0). If it crosses a threshold, we dig.
+            const float RawBasinNoise = (BasinNoise.GetNoise(WorldX, WorldY) + 1.0f) / 2.0f;
+            if (RawBasinNoise > 0.7f) // The higher the threshold, the rarer the lakes
+            {
+                // Smoothly depress the terrain.
+                // A value of 0.7 gives 0 depth. A value of 1.0 gives MaxDepth.
+                const float DepthRatio = (RawBasinNoise - 0.7f) / 0.3f;
+                constexpr int32 MaxBasinDepth = 15;
+
+                SurfaceZ -= FMath::RoundToInt(DepthRatio * MaxBasinDepth);
+
+                // Ensure the basin floor is dirt/mud, not grass
+                SurfaceBlock = EVoxelType::Dirt;
+            }
+
+            // Cache the final terrain height for decorators later
+            SurfaceHeightMap[GetColumnIndex(X, Y)] = SurfaceZ;
+
             // 3. FILL THE VERTICAL COLUMN
             for (int32 Z = 0; Z < ChunkSize; Z++)
             {
                 const int32 VoxelIndex = GetVoxelIndex(X, Y, Z);
                 const float WorldZ = ChunkWorldPos.Z + (Z * VoxelSize);
 
+                // THE GLOBAL WATER TABLE
                 if (Z > SurfaceZ)
                 {
-                    if (Z <= SeaLevel) VoxelData[VoxelIndex] = EVoxelType::Water;
-                    continue;
+                    // If we are above the ground, but at or below Sea Level, it is definitively water.
+                    // This naturally fills Oceans AND our newly carved Inland Basins.
+                    if (Z <= SeaLevel)
+                    {
+                        VoxelData[VoxelIndex] = EVoxelType::Water;
+                    }
+                    continue; // Skip the rest of the solid block logic
                 }
 
                 // Apply Biome-specific Stratification
@@ -209,10 +261,10 @@ void AVoxelChunk::GenerateVoxelData()
                 // Surface Structures
                 if (CurrentType == EVoxelType::Grass) {
                     const float Roll = FMath::FRand();
-                    if (LakeAsset && Roll < 0.005f) {
-                        PasteStructure(LakeAsset->GenerateStructure(), X, Y, Z - 4, true);
-                    }
-                    else if (CaveEntranceAsset && Roll > 0.995f) {
+                    // if (LakeAsset && Roll < 0.005f) {
+                    //     CarveLake(X, Y, 8, 5); // Radius = 8, MaxDepth = 5
+                    // }
+                    if (CaveEntranceAsset && Roll > 0.995f) {
                         PasteStructure(CaveEntranceAsset->GenerateStructure(), X, Y, Z + 2, true);
                     }
                     break; // Surface found, move to next column
@@ -241,7 +293,8 @@ void AVoxelChunk::GenerateVoxelData()
                     const EVoxelType CurrentType = GetVoxelType(X, Y, Z);
 
                     if (CurrentType == EVoxelType::Grass && TreeAsset) {
-                        if (FMath::FRand() < TreeSpawnChance) {
+                        // Ensure the grass block has solid ground below it
+                        if (IsStableGround(X, Y, Z) && FMath::FRand() < TreeSpawnChance) {
                             PasteStructure(TreeAsset->GenerateStructure(), X, Y, Z + 1, false);
                         }
                         break;
@@ -506,4 +559,66 @@ void AVoxelChunk::PasteStructure(const FVoxelStructure& Structure, int32 RootX, 
             }
         }
     }
+}
+
+void AVoxelChunk::CarveLake(int32 CenterX, int32 CenterY, int32 Radius, int32 MaxDepth)
+{
+    // 1. Find the actual ground height at the lake's center
+      const int32 SurfaceZ = FindTopSolidZ(CenterX, CenterY);
+      if (SurfaceZ < 0) return; // No solid ground, cannot carve
+
+      // 2. Define the lake basin as a parabolic depression
+      for (int32 dx = -Radius; dx <= Radius; dx++)
+      {
+          for (int32 dy = -Radius; dy <= Radius; dy++)
+          {
+              const int32 X = CenterX + dx;
+              const int32 Y = CenterY + dy;
+
+              // 2D radial distance from lake center
+              const float Dist2D = FMath::Sqrt(
+              FMath::Square(static_cast<float>(dx)) + FMath::Square(static_cast<float>(dy))
+              );
+              if (Dist2D > Radius) continue; // Outside the circular lake area
+
+              // Parabolic shape: deepest at center, shallow at edges
+              const float DepthRatio = 1.0f - (Dist2D / Radius);
+              const int32 CarveDepth = FMath::RoundToInt(DepthRatio * MaxDepth);
+
+              // Lake bottom sits 'CarveDepth' blocks below the surface
+              const int32 LakeBottomZ = SurfaceZ - CarveDepth;
+              const int32 WaterSurfaceZ = LakeBottomZ + 1; // One block of water above bottom
+
+              // 3. Carve the column from surface down to lake bottom
+              for (int32 Z = SurfaceZ; Z >= LakeBottomZ; Z--)
+              {
+                  if (Z < 0 || Z >= ChunkSize) continue;
+
+                  const int32 Index = GetVoxelIndex(X, Y, Z);
+                  const EVoxelType Existing = VoxelData[Index];
+
+                  // At the very bottom, place dirt as the lake bed
+                  if (Z == LakeBottomZ)
+                  {
+                      VoxelData[Index] = EVoxelType::Dirt;
+                  }
+                  // Above the bottom, fill with water
+                  else if (Z <= WaterSurfaceZ && Z > LakeBottomZ)
+                  {
+                      VoxelData[Index] = EVoxelType::Water;
+                  }
+                  // Remove any solid blocks in between (carve the bowl)
+                  else if (Existing != EVoxelType::Empty)
+                  {
+                      VoxelData[Index] = EVoxelType::Empty;
+                  }
+              }
+
+              // 4. Mark this column as part of a lake (prevents random water cubes)
+              if (X >= 0 && X < ChunkSize && Y >= 0 && Y < ChunkSize)
+              {
+                  LakeMask[X + (Y * ChunkSize)] = true;
+              }
+          }
+      }
 }
