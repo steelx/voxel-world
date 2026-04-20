@@ -48,7 +48,7 @@ public:
 	AVoxelChunk();
 	virtual void Tick(float DeltaTime) override;
 	// Manager will call InitializeChunk.
-	void InitializeChunk(const int32 InGlobalSeed, const FIntPoint InTargetCoord);
+	void InitializeChunk(const int32 InGlobalSeed, const FIntPoint InTargetCoord, const int32 InChunkSize);
 
 	// This is the function the Worker will call
 	void DoBackgroundGeneration();
@@ -106,8 +106,11 @@ protected:
 	float BiomeNoiseFrequency = 0.0002f;
 
 	// The dimensions of our chunk. 32x32x32 = 32,768 blocks.
+	int32 ChunkSize;// Property now controlled by Manager
+
+	// Add a dedicated height variable. 128 gives plenty of room for mountains.
 	UPROPERTY(EditAnywhere, Category = "Voxel|Terrain")
-	int32 ChunkSize = 32;
+	int32 ChunkHeight = 128;
 
 	UPROPERTY(EditAnywhere, Category = "Voxel|Decorators")
 	float TreeSpawnChance = 0.015f; // 1.5% chance per grass block

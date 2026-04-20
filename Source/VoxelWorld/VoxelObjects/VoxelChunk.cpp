@@ -42,10 +42,11 @@ void AVoxelChunk::Tick(float DeltaTime)
     }
 }
 
-void AVoxelChunk::InitializeChunk(const int32 InGlobalSeed, const FIntPoint InTargetCoord)
+void AVoxelChunk::InitializeChunk(const int32 InGlobalSeed, const FIntPoint InTargetCoord, const int32 InChunkSize)
 {
     this->GlobalSeed = InGlobalSeed;
     this->GridCoordinate = InTargetCoord;
+    this->ChunkSize = InChunkSize;
 
     // --- CREATE A THREAD-SAFE SNAPSHOT for GetBlockData ---
     BlockDataCache.Empty();
@@ -106,16 +107,15 @@ void AVoxelChunk::DoBackgroundGeneration()
 // 1D Flattening Math
 int32 AVoxelChunk::GetVoxelIndex(const int32 X, const int32 Y, const int32 Z) const
 {
-    const int32 PaddedSize = ChunkSize + 2;
-    // Shift local coordinates (-1 to 32) into array space (0 to 33)
-    return (X + 1) + ((Y + 1) * PaddedSize) + ((Z + 1) * PaddedSize * PaddedSize);
+    const int32 PaddedXY = ChunkSize + 2;
+    return (X + 1) + ((Y + 1) * PaddedXY) + ((Z + 1) * PaddedXY * PaddedXY);
 }
 
 // Safe wrapper to prevent out-of-bounds array crashes
 EVoxelType AVoxelChunk::GetVoxelType(const int32 X, const int32 Y, const int32 Z) const
 {
-    // We only return Empty if it exceeds our PADDED boundary!
-    if (X < -1 || X > ChunkSize || Y < -1 || Y > ChunkSize || Z < -1 || Z > ChunkSize)
+    // Use ChunkHeight for the Z boundary check!
+    if (X < -1 || X > ChunkSize || Y < -1 || Y > ChunkSize || Z < -1 || Z > ChunkHeight)
         return EVoxelType::Empty;
 
     return VoxelData[GetVoxelIndex(X, Y, Z)];
@@ -146,9 +146,11 @@ bool AVoxelChunk::IsStableGround(const int32 X, const int32 Y, const int32 Z) co
 // Fill the memory with data
 void AVoxelChunk::GenerateVoxelData()
 {
-    const int32 PaddedSize = ChunkSize + 2; // 34x34x34
-    VoxelData.Init(EVoxelType::Empty, PaddedSize * PaddedSize * PaddedSize);
-    SurfaceHeightMap.Init(0, PaddedSize * PaddedSize);
+    const int32 PaddedXY = ChunkSize + 2;
+    const int32 PaddedZ = ChunkHeight + 2;
+
+    VoxelData.Init(EVoxelType::Empty, PaddedXY * PaddedXY * PaddedZ);
+    SurfaceHeightMap.Init(0, PaddedXY * PaddedXY);
 
     const FVector ChunkWorldPos = GetActorLocation();
     constexpr float VoxelSize = 100.0f;
@@ -218,8 +220,8 @@ void AVoxelChunk::GenerateVoxelData()
             // Cache the final terrain height for decorators later
             SurfaceHeightMap[GetColumnIndex(X, Y)] = SurfaceZ;
 
-            // 3. FILL THE VERTICAL COLUMN -- Loop Z from -1 to ChunkSize
-            for (int32 Z = -1; Z <= ChunkSize; Z++)
+            // 3. FILL THE VERTICAL COLUMN -- Loop Z from -1 to ChunkHeight
+            for (int32 Z = -1; Z <= ChunkHeight; Z++)
             {
                 const int32 VoxelIndex = GetVoxelIndex(X, Y, Z);
                 const float WorldZ = ChunkWorldPos.Z + (Z * VoxelSize);
@@ -365,7 +367,6 @@ void AVoxelChunk::GenerateVoxelData()
 // The Naive Surface Mesher
 void AVoxelChunk::GenerateMesh()
 {
-    // Clear out the Async arrays for a clean slate
     AsyncMeshData.Vertices.Empty();
     AsyncMeshData.Triangles.Empty();
     AsyncMeshData.Normals.Empty();
@@ -380,16 +381,20 @@ void AVoxelChunk::GenerateMesh()
         const bool bIsXAxis = (FaceDirection == 2 || FaceDirection == 3);
         const bool bIsYAxis = (FaceDirection == 4 || FaceDirection == 5);
 
-        for (int32 Slice = 0; Slice < ChunkSize; Slice++)
+        // DYNAMIC LIMITS: Transforms the 16x16x128 pillar based on orientation
+        const int32 SliceLimit = bIsZAxis ? ChunkHeight : ChunkSize;
+        const int32 ULimit = ChunkSize;
+        const int32 VLimit = bIsZAxis ? ChunkSize : ChunkHeight;
+
+        for (int32 Slice = 0; Slice < SliceLimit; Slice++)
         {
             TArray<EVoxelType> Mask;
-            Mask.Init(EVoxelType::Empty, ChunkSize * ChunkSize);
+            Mask.Init(EVoxelType::Empty, ULimit * VLimit);
 
-            for (int32 V = 0; V < ChunkSize; V++)
+            for (int32 V = 0; V < VLimit; V++)
             {
-                for (int32 U = 0; U < ChunkSize; U++)
+                for (int32 U = 0; U < ULimit; U++)
                 {
-                    // THE FIX: Bulletproof 2D-to-3D axis mapping
                     const int32 X = bIsXAxis ? Slice : U;
                     const int32 Y = bIsYAxis ? Slice : (bIsXAxis ? U : V);
                     const int32 Z = bIsZAxis ? Slice : V;
@@ -404,32 +409,32 @@ void AVoxelChunk::GenerateMesh()
 
                         if (GetVoxelType(NeighborX, NeighborY, NeighborZ) == EVoxelType::Empty)
                         {
-                            Mask[U + (V * ChunkSize)] = CurrentBlock;
+                            Mask[U + (V * ULimit)] = CurrentBlock;
                         }
                     }
                 }
             }
 
             // The Greedy Sweep
-            for (int32 V = 0; V < ChunkSize; V++)
+            for (int32 V = 0; V < VLimit; V++)
             {
-                for (int32 U = 0; U < ChunkSize; U++)
+                for (int32 U = 0; U < ULimit; U++)
                 {
-                    const EVoxelType MaskType = Mask[U + (V * ChunkSize)];
+                    const EVoxelType MaskType = Mask[U + (V * ULimit)];
 
                     if (MaskType != EVoxelType::Empty)
                     {
                         int32 Width = 1;
                         int32 Height = 1;
 
-                        while (U + Width < ChunkSize && Mask[(U + Width) + (V * ChunkSize)] == MaskType) Width++;
+                        while (U + Width < ULimit && Mask[(U + Width) + (V * ULimit)] == MaskType) Width++;
 
                         bool bDone = false;
-                        while (V + Height < ChunkSize && !bDone)
+                        while (V + Height < VLimit && !bDone)
                         {
                             for (int32 W = 0; W < Width; W++)
                             {
-                                if (Mask[(U + W) + ((V + Height) * ChunkSize)] != MaskType)
+                                if (Mask[(U + W) + ((V + Height) * ULimit)] != MaskType)
                                 {
                                     bDone = true;
                                     break;
@@ -438,22 +443,20 @@ void AVoxelChunk::GenerateMesh()
                             if (!bDone) Height++;
                         }
 
-                        // Match the Start positions perfectly with our clean axis mapping
                         const int32 StartX = bIsXAxis ? Slice : U;
                         const int32 StartY = bIsYAxis ? Slice : (bIsXAxis ? U : V);
                         const int32 StartZ = bIsZAxis ? Slice : V;
                         FVector BlockPos(StartX * 100.0f, StartY * 100.0f, StartZ * 100.0f);
 
-                        // PASS THE ASYNC ARRAYS INSTEAD OF LOCAL ONES
                         AddFace(AsyncMeshData.Vertices, AsyncMeshData.Triangles, AsyncMeshData.Normals,
-                                AsyncMeshData.UVs, AsyncMeshData.Colors, VertexCount, BlockPos, FaceDirection,
-                                Width, Height, MaskType);
+                                AsyncMeshData.UVs, AsyncMeshData.Colors, VertexCount,
+                                BlockPos, FaceDirection, Width, Height, MaskType);
 
                         for (int32 y = 0; y < Height; y++)
                         {
                             for (int32 x = 0; x < Width; x++)
                             {
-                                Mask[(U + x) + ((V + y) * ChunkSize)] = EVoxelType::Empty;
+                                Mask[(U + x) + ((V + y) * ULimit)] = EVoxelType::Empty;
                             }
                         }
                     }

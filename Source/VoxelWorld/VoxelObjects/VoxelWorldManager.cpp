@@ -66,7 +66,7 @@ void AVoxelWorldManager::UpdateStreaming()
 				{
 					// Map key: TargetCoord, Value: Pointer to the Actor
 					ActiveChunks.Add(TargetCoord, NewChunk);
-					NewChunk->InitializeChunk(WorldSeed, TargetCoord);
+					NewChunk->InitializeChunk(WorldSeed, TargetCoord, 32);
 				}
 			}
 		}
